@@ -2,7 +2,7 @@
 #
 # You never edit a profile by hand: the package manager performs the insertion.
 #
-#   dsh plugin --profile <profile> add dsh-dev-env
+#   dsh plugin --profile <profile> add @cszi666/dsh-dev-env
 #   dsh plugin --profile <profile> add github:cszi666/dsh-dev-env
 #
 # Local development against a checkout:
@@ -10,4 +10,4 @@
 #   dsh plugin --profile <profile> add link:<absolute path to this directory>
 - insert:
     - id: dev-env
-      name: dsh-dev-env
+      name: '@cszi666/dsh-dev-env'

@@ -71,7 +71,16 @@ HTTP endpoint accepts `auto` or one of the plan modes.
 
 ## Install
 
-The spec is the same string everywhere:
+Both channels are live. Pick either spec.
+
+**npm — no prerequisites at all.** No `git`, no Node, nothing to install first:
+
+```
+@cszi666/dsh-dev-env
+```
+
+**GitHub — tracks the default branch**, but needs `git` on the machine: DSH verifies the repository
+with `git ls-remote` before installing, and pnpm fetches it over git.
 
 ```
 github:cszi666/dsh-dev-env
@@ -86,7 +95,7 @@ from inside DSH instead:
 - **Ask the agent.** Paste this into any session:
 
   ```
-  Install the DSH plugin github:cszi666/dsh-dev-env
+  Install the DSH plugin @cszi666/dsh-dev-env
   ```
 
   The agent calls `plugin_manager` with `action: install_bundle` and that spec, and the install is
@@ -102,18 +111,17 @@ answers `404`, restart DSH once (see [Pitfalls](#pitfalls)).
 
 ```powershell
 npm install -g @deepseek-ai/dsh        # only if you do not have it yet
-dsh plugin --profile <profile> add github:cszi666/dsh-dev-env
+dsh plugin --profile <profile> add @cszi666/dsh-dev-env
 ```
 
 `dsh plugin` forwards its arguments to pnpm inside the profile directory, so every pnpm spec works:
-`github:owner/repo`, `https://github.com/owner/repo`, a `.tgz` URL, or a version range. `<profile>` is
-whichever profile you run — it **cannot be `desktop`**, which belongs to the Electron app.
+`@scope/name`, `github:owner/repo`, `https://github.com/owner/repo`, a `.tgz` URL, or a version range.
+`<profile>` is whichever profile you run — it **cannot be `desktop`**, which belongs to the Electron
+app.
 
-Once the package is on npm, the shorter form replaces the whole spec:
-
-```powershell
-dsh plugin --profile <profile> add dsh-dev-env
-```
+The npm package currently lives under the `@cszi666` scope. An unscoped `dsh-dev-env` release is planned
+once npm's post-unpublish cooldown on that name expires; if that happens, only this spec changes — the
+GitHub spec and the repository name stay the same.
 
 For a GitHub repo DSH checks reachability with `git ls-remote` before installing, so a typo in the
 account or repository name fails immediately instead of half-way through.

@@ -60,7 +60,15 @@ DSH Web 界面里的一个全局面板：`sidebar.panellist` 中 id 为 `dev-env
 
 ## 安装
 
-所有方式用的是同一个 spec：
+两个渠道都已上线，任选一个 spec。
+
+**npm —— 零前置依赖。** 不需要 `git`、不需要 Node，什么都不用先装：
+
+```
+@cszi666/dsh-dev-env
+```
+
+**GitHub —— 跟随默认分支**，但需要本机有 `git`：DSH 会先用 `git ls-remote` 校验仓库，pnpm 也走 git 拉取。
 
 ```
 github:cszi666/dsh-dev-env
@@ -74,7 +82,7 @@ github:cszi666/dsh-dev-env
 - **直接吩咐 Agent。** 在任意会话里粘贴：
 
   ```
-  安装 DSH 插件 github:cszi666/dsh-dev-env
+  安装 DSH 插件 @cszi666/dsh-dev-env
   ```
 
   Agent 会用 `plugin_manager` 发起 `action: install_bundle`、`target` 填这个 spec，并应用到当前 profile。
@@ -88,18 +96,15 @@ github:cszi666/dsh-dev-env
 
 ```powershell
 npm install -g @deepseek-ai/dsh        # 还没有 CLI 才需要
-dsh plugin --profile <profile> add github:cszi666/dsh-dev-env
+dsh plugin --profile <profile> add @cszi666/dsh-dev-env
 ```
 
 `dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，所以任何 pnpm spec 都成立：
-`github:owner/repo`、`https://github.com/owner/repo`、`.tgz` 链接、版本范围都行。`<profile>` 填你在用的那个
-profile——**不能填 `desktop`**，它归 Electron 应用所有。
+`@scope/name`、`github:owner/repo`、`https://github.com/owner/repo`、`.tgz` 链接、版本范围都行。`<profile>`
+填你在用的那个 profile——**不能填 `desktop`**，它归 Electron 应用所有。
 
-等包发布到 npm 之后，整个 spec 可以简化成：
-
-```powershell
-dsh plugin --profile <profile> add dsh-dev-env
-```
+npm 包目前挂在 `@cszi666` scope 下。等 npm 对 `dsh-dev-env` 这个未加 scope 的名字的取消发布冷却期结束后，
+计划发一个同名的不带 scope 版本；真到那时只有这个 spec 会变，GitHub spec 和仓库名都不受影响。
 
 对 GitHub 仓库，DSH 会先用 `git ls-remote` 确认可达性，所以账号或仓库名打错会立刻失败，而不是装到一半才报错。
 
