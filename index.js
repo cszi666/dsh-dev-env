@@ -16,8 +16,18 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { CATALOG, CATEGORIES } from './catalog.js'
-import { DESCRIPTIONS } from './describe.js'
 import { expandEnv, expandGlob, safeRead } from './paths.js'
+
+// describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
+// 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
+// "failed to import" 而彻底不可用。文案不值得让插件砖掉，所以这里刻意用动态 import 包起来：
+// 静态 import 一旦解析失败，整个模块就加载不了，连降级的机会都没有。
+let DESCRIPTIONS = {}
+try {
+  ;({ DESCRIPTIONS } = await import('./describe.js'))
+} catch {
+  DESCRIPTIONS = {}
+}
 
 export const inject = ['tools']
 

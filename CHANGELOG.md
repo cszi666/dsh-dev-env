@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-10-10
+
+**1.1.0 could not activate on any machine that installed it from npm.** Do not use 1.1.0; upgrade
+straight to 1.1.1.
+
+### Fixed
+
+- **`describe.js` was not in the published tarball.** `index.js` imported it, `package.json`'s
+  `files[]` did not list it, so npm packed 16 files and the import failed on every install with
+  `1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to import`. The working tree always
+  had the file, which is why nothing local noticed. `files[]` now lists it, and the tarball grew to 17
+  files.
+- **A missing descriptions file can no longer disable the plugin.** `index.js` now loads it through a
+  `try`/`catch` dynamic import and falls back to an empty map, so the worst case is a panel without the
+  one-line descriptions instead of a plugin that will not start. A cosmetic data file should never be
+  able to brick activation, whatever packaging does.
+- **The self-check now looks in the direction that would have caught this.** It previously verified
+  that every path in `files[]` exists — the file was simply absent from that list, so the check had
+  nothing to complain about. It now walks the relative imports of every shipped module, following them
+  transitively, and fails with `index.js imports describe.js, which files[] does not pack`. That
+  message doubles as a regression test: removing the entry makes `npm test` fail.
+
+### Added
+
+- **An upgrade path, written down.** `docs/RELEASING.md` now has an *Upgrading an installed copy*
+  section, because "install the new version" is not obvious when a plugin is already present and a
+  failed upgrade leaves the app reporting an entry that did not activate.
+
 ## [1.1.0] - 2026-10-10
 
 Two things a first-time user could not get from 1.0.0: whether an install was progressing, and what
@@ -133,5 +161,6 @@ it, and are recorded because they describe behaviour a user would otherwise hit.
 - No runtime dependencies, and no `peerDependencies` on purpose, so DSH's pre-install
   version-compatibility gate cannot block the plugin.
 
+[1.1.1]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.1
 [1.1.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.0
 [1.0.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.0.0

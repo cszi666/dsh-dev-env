@@ -7,8 +7,8 @@
 | 1.1.x | Yes |
 | 1.0.x | No |
 
-The plugin is at 1.1.0 and has no released security history. Fixes land on `main` and are released as
-a patch version.
+The plugin is at 1.1.1 and has no released security history. Fixes land on `main` and are released as
+a patch version. **Do not use 1.1.0**: its tarball was missing `describe.js`, so it cannot activate.
 
 ## Reporting a vulnerability
 

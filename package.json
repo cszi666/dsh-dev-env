@@ -1,6 +1,6 @@
 {
   "name": "@cszi666/dsh-dev-env",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "DSH plugin: inventory your Windows dev/test toolchain, spot the gaps, and fill them with one click.",
   "keywords": [
     "dsh",
@@ -50,6 +50,7 @@
     "index.js",
     "client.js",
     "catalog.js",
+    "describe.js",
     "paths.js",
     "scripts/check.mjs",
     "cordis.patch.yml",

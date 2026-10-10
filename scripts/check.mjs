@@ -367,6 +367,42 @@ check('files[] shipped by npm actually exist', () => {
   }
 })
 
+check('every module the shipped code imports is itself shipped', () => {
+  // The guard whose absence shipped 1.1.0 broken. `files[]` is what npm packs, so a relative import
+  // that is not in it resolves in the working tree and nowhere else: every machine that installed
+  // 1.1.0 got "failed to import" and lost the plugin entirely, because describe.js was in the repo
+  // but not in the tarball. Checking that listed files exist (the check above) is the other
+  // direction and cannot catch this.
+  const patterns = (pkg.files || []).filter((entry) => !entry.endsWith('/'))
+  const isShipped = (rel) =>
+    patterns.includes(rel) ||
+    patterns.some((pattern) => {
+      if (!pattern.includes('*')) return false
+      const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '[^/]*')
+      return new RegExp(`^${escaped}$`).test(rel)
+    })
+
+  const queue = patterns.filter((entry) => /\.m?js$/.test(entry))
+  const walked = new Set()
+  const problems = []
+  while (queue.length) {
+    const rel = queue.shift()
+    if (walked.has(rel)) continue
+    walked.add(rel)
+    const abs = path.join(ROOT, rel)
+    if (!existsSync(abs)) continue
+    const source = readFileSync(abs, 'utf8')
+    // Static `from '…'`, side-effect `import '…'`, and dynamic `import('…')` all count.
+    for (const match of source.matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), match[1]))
+      if (!/\.m?js$/.test(target)) continue
+      if (!isShipped(target)) problems.push(`${rel} imports ${target}, which files[] does not pack`)
+      else if (!walked.has(target)) queue.push(target)
+    }
+  }
+  assert(problems.length === 0, problems.join('; '))
+})
+
 check('locale dictionaries parse and carry display metadata', () => {
   for (const locale of ['en', 'zh']) {
     const file = path.join(ROOT, 'locale', `${locale}.json`)

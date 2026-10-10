@@ -133,19 +133,21 @@ on a missing secret. Create an npm automation token, then store it as the reposi
 (Settings → Secrets and variables → Actions → New repository secret), and only then:
 
 ```powershell
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.1.1
+git push origin v1.1.1
 ```
 
 That publishes the package through `.github/workflows/release.yml`, and gives the link at the bottom of
-`CHANGELOG.md` (`releases/tag/v1.1.0`) something to resolve to.
+`CHANGELOG.md` (`releases/tag/v1.1.1`) something to resolve to.
 
 Prefer publishing by hand? Run `npm publish --access public` first and push the tag afterwards. The
 workflow refuses to publish a version that is already on the registry, so the tag run becomes a no-op —
 but without `NPM_TOKEN` it still reports red, so create the secret either way.
 
-**State as of 1.1.0:** `@cszi666/dsh-dev-env@1.0.0` is live on npm; 1.1.0 is not published yet. Both
-install paths work, and the npm one is the only one a clean machine can use (see [Package name](#package-name)).
+**State as of 1.1.1:** `@cszi666/dsh-dev-env@1.0.0` and `1.1.0` are on npm, but **1.1.0 is broken** —
+its tarball was missing `describe.js`, so it cannot activate. 1.1.1 is the first usable 1.1.x. Both
+install paths work, and the npm one is the only one a clean machine can use (see
+[Package name](#package-name)).
 
 ### Expect a browser step
 
@@ -190,6 +192,34 @@ npm publish --access public
 Users pick it up with `dsh plugin --profile <profile> add @cszi666/dsh-dev-env@<version>` or by
 reinstalling the bundle. Remember that anyone running a plugin from a git spec receives the new commit
 only when they reinstall it.
+
+### Upgrading an installed copy
+
+Installing a plugin that is already present is **not** an automatic upgrade, and a failed upgrade is
+worse than no upgrade: DSH keeps the bundle row and reports
+`dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to import`, which reads
+as a broken application rather than a broken plugin. 1.1.0 shipped exactly that way.
+
+So the sequence for a machine that already has an older version:
+
+1. **Uninstall first**, so the broken generation is gone rather than racing the new one:
+   `plugin_manager` with `action: remove_bundle`, or **Settings → Plugins → uninstall**.
+   In a CLI-managed profile, `dsh plugin --profile <profile> remove @cszi666/dsh-dev-env`.
+2. **Install the new version by its exact spec** — `@cszi666/dsh-dev-env@1.1.1`, not the bare name.
+   Pinning makes the result checkable; the bare name leaves you guessing which generation is live.
+3. **Confirm what actually loaded** before trusting it: `npm view @cszi666/dsh-dev-env dist-tags`
+   must show the version you intended, and `plugin_manager` `list_bundles` must show the same one. A
+   row that exists is not the same as a plugin that activated.
+4. **Restart DSH** if the panel seems stale. The Host half is imported once at startup, so a changed
+   `index.js` needs a restart; the browser half only needs a page refresh.
+
+Before publishing a version at all, the two checks that would have caught 1.1.0 are worth running
+explicitly, because both are silent in a working tree:
+
+```powershell
+npm test                     # includes: every module the shipped code imports is itself shipped
+npm pack --dry-run           # read the file list; it is the truth about what users receive
+```
 
 ## Package name
 
