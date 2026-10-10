@@ -70,10 +70,14 @@ The panel is a consumer of the host half, exactly like the tools are:
 | `GET` | `/dsh-dev-env/api/jobs` | – | install jobs, newest first |
 | `POST` | `/dsh-dev-env/api/install` | `{ "id": "gcc", "mode": "auto" }` | the started job and the entry's available plans |
 | `POST` | `/dsh-dev-env/api/open` | `{ "url": "https://example.com" }` | opens the URL in the default browser |
+| `POST` | `/dsh-dev-env/api/jobs/delete` | `{ "id": "44ee61f9" }` or `{ "scope": "finished" }` | the remaining jobs; `400` if that job is still running |
+| `POST` | `/dsh-dev-env/api/explain` | `{ "id": "gcc", "lang": "zh" }` | puts a question about that tool into the most recently active session, via `sessionController.prompt` |
 
 The endpoint answers `404` for an unknown entry id, `400` when no plan matches the requested `mode`
 (or the URL is not `http(s)`), and `405` for the wrong method. `mode: "command"` is tool-only; the
-HTTP endpoint accepts `auto` or one of the plan modes.
+HTTP endpoint accepts `auto` or one of the plan modes. `explain` answers `503` when the running DSH has
+no `sessionController` and `409` when no session can take a prompt, so a caller can tell "this build
+cannot do it" apart from "it can, but there is nowhere to put the answer".
 
 ## Requirements
 

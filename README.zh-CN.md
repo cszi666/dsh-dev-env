@@ -59,9 +59,13 @@ DSH Web 界面里的一个全局面板：`sidebar.panellist` 中 id 为 `dev-env
 | `GET` | `/dsh-dev-env/api/jobs` | – | 补齐任务列表，最新的在前 |
 | `POST` | `/dsh-dev-env/api/install` | `{ "id": "gcc", "mode": "auto" }` | 已启动的任务，以及该条目可用的方案 |
 | `POST` | `/dsh-dev-env/api/open` | `{ "url": "https://example.com" }` | 用默认浏览器打开该地址 |
+| `POST` | `/dsh-dev-env/api/jobs/delete` | `{ "id": "44ee61f9" }` 或 `{ "scope": "finished" }` | 剩余任务；该任务仍在运行则返回 `400` |
+| `POST` | `/dsh-dev-env/api/explain` | `{ "id": "gcc", "lang": "zh" }` | 通过 `sessionController.prompt` 把关于该工具的提问投进最近活跃的会话 |
 
 条目 id 未知时返回 `404`；`mode` 找不到对应方案（或 url 不是 `http(s)`）时返回 `400`；方法不对返回 `405`。
-`mode: "command"` 只属于工具；HTTP 端点接受 `auto` 或某个具体方案的模式。
+`mode: "command"` 只属于工具；HTTP 端点接受 `auto` 或某个具体方案的模式。`explain` 在当前 DSH 没有
+`sessionController` 时返回 `503`，没有会话能接提问时返回 `409`——这样调用方就能区分「这个版本做不到」
+和「能做到，但没地方放答案」。
 
 ## 运行要求
 
