@@ -64,7 +64,26 @@ Rules the self-check enforces, so you find out before CI does:
 - Every `pattern` and `registry.match` compiles.
 - Every probe carries the fields its kind requires.
 - At least one of `install.winget` / `install.npm` / `install.pip` / `install.page` is present.
+- **The entry has a description in both languages** in `describe.js`. See below.
 - **No path hardcodes a drive letter or a user profile.** See below.
+
+### Describe the entry
+
+A name alone tells a beginner nothing, so every entry also needs one line in `describe.js` saying what
+the tool is and what you would use it for — Chinese in `zh`, English in `en`:
+
+```js
+ripgrep: { zh: '在代码目录里快速搜索文本内容', en: 'Searches file contents fast across a code tree' },
+```
+
+Keep the display copy in `describe.js` rather than in the entry itself: adding a probe should not mean
+editing a growing literal in `catalog.js`, and keeping all 82 lines in one file makes it obvious when one
+is missing. The self-check rejects a missing language, an orphan key for an id that no longer exists, a
+string longer than 30 Chinese or 64 English characters, an ASCII double quote or a backslash (these are
+pasted into single-quoted literals), and a trailing full stop.
+
+The `↗` reference button next to it needs no entry of its own: it searches Baidu Baike in the Chinese
+panel and Wikipedia in the English one, so a renamed article cannot break it.
 
 Add `essential: true` only for tools that most development machines need — it feeds the "essential
 gaps" counter, and marking too much makes the counter useless.

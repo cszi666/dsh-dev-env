@@ -17,6 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CATALOG, CATEGORIES } from '../catalog.js'
+import { DESCRIPTIONS } from '../describe.js'
 import { expandEnv, expandGlob, globSegmentToRegExp } from '../paths.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -129,6 +130,42 @@ check('every entry has at least one install strategy', () => {
     const install = entry.install || {}
     assert(INSTALL_TARGETS.some((key) => typeof install[key] === 'string' && install[key]),
       `${entry.id}: needs one of ${INSTALL_TARGETS.join(' / ')}`)
+  }
+})
+
+// ---------------------------------------------------------------- descriptions
+console.log('\ndescriptions')
+
+check('every catalog entry has a description in both languages', () => {
+  for (const entry of CATALOG) {
+    const text = DESCRIPTIONS[entry.id]
+    assert(text, `${entry.id}: no description (add one to describe.js)`)
+    assert(typeof text.zh === 'string' && text.zh.trim(), `${entry.id}: missing zh`)
+    assert(typeof text.en === 'string' && text.en.trim(), `${entry.id}: missing en`)
+  }
+})
+
+check('descriptions stay short enough for one row', () => {
+  // The panel renders these on a single ellipsised line under each row.
+  for (const [id, text] of Object.entries(DESCRIPTIONS)) {
+    assert([...text.zh].length <= 30, `${id}: zh is ${[...text.zh].length} chars, cap is 30`)
+    assert(text.en.length <= 64, `${id}: en is ${text.en.length} chars, cap is 64`)
+  }
+})
+
+check('describe.js has no orphan or unsafe entries', () => {
+  const ids = new Set(CATALOG.map((entry) => entry.id))
+  for (const id of Object.keys(DESCRIPTIONS)) {
+    assert(ids.has(id), `describe.js describes "${id}", which is not in the catalog`)
+  }
+  // These strings are pasted into single-quoted literals, so a quote or backslash would either
+  // break the module or need escaping that a future edit is likely to get wrong.
+  for (const [id, text] of Object.entries(DESCRIPTIONS)) {
+    for (const [lang, value] of [['zh', text.zh], ['en', text.en]]) {
+      assert(!value.includes('"'), `${id} (${lang}): use no ASCII double quote`)
+      assert(!value.includes('\\'), `${id} (${lang}): use no backslash`)
+      assert(!/[.。]$/.test(value), `${id} (${lang}): drop the trailing full stop`)
+    }
   }
 })
 

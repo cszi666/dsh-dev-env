@@ -52,6 +52,14 @@ window.__ModuleLoader__.load({
       loading: '正在读取环境…',
       essentialBadge: '必备',
       switchLanguage: '切换语言',
+      learn: '了解',
+      elapsed: '已用',
+      phaseWaiting: '排队中',
+      phaseDownload: '下载中',
+      phaseVerify: '校验中',
+      phaseInstall: '安装中',
+      phaseDone: '完成',
+      logTail: '日志尾部',
     }
     const DICT_EN = {
       panel: 'Dev Env',
@@ -84,6 +92,14 @@ window.__ModuleLoader__.load({
       loading: 'Reading environment…',
       essentialBadge: 'essential',
       switchLanguage: 'Switch language',
+      learn: 'Learn',
+      elapsed: 'elapsed',
+      phaseWaiting: 'Queued',
+      phaseDownload: 'Downloading',
+      phaseVerify: 'Verifying',
+      phaseInstall: 'Installing',
+      phaseDone: 'Done',
+      logTail: 'log tail',
     }
 
     // ------------------------------------------------------------ language
@@ -109,6 +125,7 @@ window.__ModuleLoader__.load({
     const t = (key) => (currentLang === 'zh' ? DICT_ZH : DICT_EN)[key] ?? key
     const categoryLabel = (group) => (currentLang === 'zh' ? group.name : group.nameEn || group.name)
     const itemName = (item) => (currentLang === 'zh' ? item.name : item.nameEn || item.name)
+    const itemDesc = (item) => (currentLang === 'zh' ? item.desc : item.descEn || item.desc) || ''
 
     function rememberLang(next) {
       currentLang = next === 'en' ? 'en' : 'zh'
@@ -171,6 +188,18 @@ window.__ModuleLoader__.load({
 .dsh-de-msg{margin-top:10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .dsh-de-err{margin-top:10px;font-size:12px;color:var(--dsw-alias-state-error-primary);white-space:pre-wrap}
 .dsh-de-empty{margin-top:24px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px}
+.dsh-de-desc{margin:-3px 0 10px 12px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-learn{appearance:none;background:transparent;border:none;padding:0;margin-left:6px;font-size:11px;color:var(--dsw-alias-brand-primary);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.dsh-de-learn:hover{opacity:.75}
+.dsh-de-rowbusy{font-size:11px;color:var(--dsw-alias-brand-primary);flex:none;display:inline-flex;align-items:center;gap:5px}
+.dsh-de-progress{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-bar{position:relative;flex:1;min-width:80px;height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.dsh-de-barfill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .3s ease}
+.dsh-de-bar[data-indeterminate="1"] .dsh-de-barfill{width:35%;animation:dsh-de-slide 1.1s ease-in-out infinite}
+@keyframes dsh-de-slide{0%{transform:translateX(-100%)}100%{transform:translateX(285%)}}
+.dsh-de-activity{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.dsh-de-state.running::after{content:'';display:inline-block;width:5px;height:5px;margin-left:5px;border-radius:50%;background:currentColor;animation:dsh-de-pulse 1s ease-in-out infinite}
+@keyframes dsh-de-pulse{0%,100%{opacity:.25}50%{opacity:1}}
 `
 
     // ------------------------------------------------------------ helpers
@@ -182,6 +211,41 @@ window.__ModuleLoader__.load({
       } catch {
         return ''
       }
+    }
+
+    /** 把毫秒说成「1分23秒」这种给人看的东西。 */
+    function durationText(ms) {
+      const total = Math.max(0, Math.round((ms || 0) / 1000))
+      if (total < 60) return `${total}s`
+      const minutes = Math.floor(total / 60)
+      const seconds = total % 60
+      if (minutes < 60) return `${minutes}m${String(seconds).padStart(2, '0')}s`
+      return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`
+    }
+
+    // 参考链接：中文界面走百度百科，英文界面走维基百科。
+    // 都用「搜索」入口而不是具体词条 URL——词条名会被编辑改动，搜索入口永远能落到正确页面，
+    // 也就不需要为 82 个条目各维护一个可能失效的链接。
+    function referenceUrl(item, lang) {
+      const term = lang === 'zh' ? item.name : item.nameEn || item.name
+      return lang === 'zh'
+        ? `https://baike.baidu.com/search/word?word=${encodeURIComponent(term)}`
+        : `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(term)}`
+    }
+
+    /** 安装器只会说中英各半，统一翻译成面板语言。 */
+    function phaseText(job, lang) {
+      if (job.status === 'succeeded') return t('phaseDone')
+      if (job.status === 'failed') return t('phaseInstall')
+      const key = job.phase ? `phase${job.phase[0].toUpperCase()}${job.phase.slice(1)}` : 'phaseWaiting'
+      return t(key)
+    }
+
+    /** 进度条：能从输出里读到百分比就画确定进度，否则画不确定进度（诚实，不假装知道）。 */
+    function progressOf(job) {
+      if (job.status === 'succeeded') return { percent: 100, indeterminate: false }
+      if (typeof job.percent === 'number') return { percent: job.percent, indeterminate: false }
+      return { percent: 0, indeterminate: true }
     }
 
     async function api(path, options) {
@@ -247,6 +311,7 @@ window.__ModuleLoader__.load({
       const [category, setCategory] = React.useState('')
       const [copied, setCopied] = React.useState(null)
       const [lang, setLang] = React.useState(currentLang)
+      const [now, setNow] = React.useState(() => Date.now())
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
@@ -266,9 +331,11 @@ window.__ModuleLoader__.load({
         load(false)
       }, [load])
 
-      // 轮询补齐任务；有任务刚从 running 结束时自动刷新清单
+      // 轮询补齐任务；有任务刚从 running 结束时自动刷新清单。
+      // 有任务在跑时把间隔压到 1 秒——否则进度条读起来像"卡死了"。
       React.useEffect(() => {
         let alive = true
+        let timer = null
         const tick = async () => {
           try {
             const payload = await api('/jobs')
@@ -278,17 +345,25 @@ window.__ModuleLoader__.load({
             const running = list.filter((job) => job.status === 'running').length
             if (runningRef.current > 0 && running < runningRef.current) load(true)
             runningRef.current = running
+            timer = setTimeout(tick, running > 0 ? 1000 : 2000)
           } catch {
-            /* 轮询失败不打扰用户 */
+            /* 轮询失败不打扰用户，退到慢速重试 */
+            if (alive) timer = setTimeout(tick, 4000)
           }
         }
         tick()
-        const timer = setInterval(tick, 2000)
         return () => {
           alive = false
-          clearInterval(timer)
+          if (timer) clearTimeout(timer)
         }
       }, [load])
+
+      // 每秒重画一次，让「已用 12s」自己走字。纯前端计时，不为这个打扰服务端。
+      React.useEffect(() => {
+        if (!jobs.some((job) => job.status === 'running')) return undefined
+        const timer = setInterval(() => setNow(Date.now()), 1000)
+        return () => clearInterval(timer)
+      }, [jobs])
 
       const install = async (item, mode) => {
         setBusy(item.id)
@@ -313,6 +388,20 @@ window.__ModuleLoader__.load({
           setCopied(item.id)
           setTimeout(() => setCopied((current) => (current === item.id ? null : current)), 1600)
         })
+      }
+
+      // 打开参考链接（百度百科 / 维基百科）。刻意不走 /install：那会往任务列表里塞一条
+      // 只是「查资料」的记录。
+      const openReference = async (item) => {
+        try {
+          await api('/open', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: referenceUrl(item, currentLang) }),
+          })
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
       }
 
       const items = (data && data.items) || []
@@ -418,7 +507,9 @@ window.__ModuleLoader__.load({
               group.rows.map((item) => {
                 const mainPlan = (item.plans || []).find((plan) => plan.mode !== 'page') || (item.plans || [])[0]
                 const pagePlan = (item.plans || []).find((plan) => plan.mode === 'page')
-                const isBusy = busy === item.id
+                // 这条正在装？那整个安装期间都要禁用按钮，否则用户会重复点。
+                const runningJob = jobs.find((job) => job.itemId === item.id && job.status === 'running')
+                const isBusy = busy === item.id || Boolean(runningJob)
                 return h(
                   'div',
                   { key: item.id },
@@ -432,6 +523,13 @@ window.__ModuleLoader__.load({
                       : h('span', { className: 'dsh-de-no' }, t('notInstalled')),
                     h('span', { className: 'dsh-de-where', title: item.where || item.reason || '' },
                       item.installed ? item.where || '' : item.reason || ''),
+                    runningJob
+                      ? h(
+                          'span',
+                          { className: 'dsh-de-rowbusy' },
+                          `${phaseText(runningJob, currentLang)} · ${durationText(now - runningJob.startedAt)}`,
+                        )
+                      : null,
                     !item.installed && mainPlan
                       ? h('code', { className: 'dsh-de-cmd', title: mainPlan.label }, mainPlan.label)
                       : null,
@@ -475,6 +573,14 @@ window.__ModuleLoader__.load({
                         )
                       : null,
                   ),
+                  itemDesc(item)
+                    ? h(
+                        'div',
+                        { className: 'dsh-de-desc' },
+                        itemDesc(item),
+                        h('button', { className: 'dsh-de-learn', onClick: () => openReference(item) }, `↗ ${t('learn')}`),
+                      )
+                    : null,
                   !item.installed && mainPlan && mainPlan.note
                     ? h('div', { className: 'dsh-de-note' }, mainPlan.note)
                     : null,
@@ -487,23 +593,43 @@ window.__ModuleLoader__.load({
             { className: 'dsh-de-jobs' },
             h('div', { className: 'dsh-de-groupname' }, `${t('jobs')} · ${jobs.length}`),
             jobs.length
-              ? jobs.map((job) =>
-                  h(
+              ? jobs.map((job) => {
+                  const progress = progressOf(job)
+                  const elapsed = durationText((job.endedAt || now) - job.startedAt)
+                  return h(
                     'div',
                     { className: 'dsh-de-job', key: job.id },
                     h(
                       'div',
                       { className: 'dsh-de-jobhead' },
-                      h('span', { className: `dsh-de-state ${job.status}` }, job.status),
+                      h('span', { className: `dsh-de-state ${job.status}` }, phaseText(job, currentLang)),
                       h('b', null, job.name),
                       h('span', { className: 'dsh-de-where' }, job.label),
                       h('span', { className: 'dsh-de-spacer' }),
-                      h('span', { className: 'dsh-de-badge' }, timeText(job.startedAt)),
+                      h('span', { className: 'dsh-de-badge' }, `${t('elapsed')} ${elapsed}`),
+                      h('span', { className: 'dsh-de-badge', title: timeText(job.startedAt) }, timeText(job.startedAt)),
                     ),
+                    h(
+                      'div',
+                      { className: 'dsh-de-progress' },
+                      h(
+                        'div',
+                        { className: 'dsh-de-bar', 'data-indeterminate': progress.indeterminate ? '1' : '0' },
+                        h('div', {
+                          className: 'dsh-de-barfill',
+                          style: progress.indeterminate ? undefined : { width: `${progress.percent}%` },
+                        }),
+                      ),
+                      progress.indeterminate ? null : h('span', { className: 'dsh-de-badge' }, `${progress.percent}%`),
+                      job.size ? h('span', { className: 'dsh-de-badge' }, job.size) : null,
+                    ),
+                    job.activity
+                      ? h('div', { className: 'dsh-de-activity', title: job.activity }, job.activity)
+                      : null,
                     job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
                     job.log && job.log.length ? h('pre', { className: 'dsh-de-pre' }, job.log.slice(-40).join('\n')) : null,
-                  ),
-                )
+                  )
+                })
               : h('div', { className: 'dsh-de-msg' }, t('noJobs')),
           ),
         ),

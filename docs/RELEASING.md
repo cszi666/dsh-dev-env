@@ -133,19 +133,41 @@ on a missing secret. Create an npm automation token, then store it as the reposi
 (Settings → Secrets and variables → Actions → New repository secret), and only then:
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 That publishes the package through `.github/workflows/release.yml`, and gives the link at the bottom of
-`CHANGELOG.md` (`releases/tag/v1.0.0`) something to resolve to.
+`CHANGELOG.md` (`releases/tag/v1.1.0`) something to resolve to.
 
 Prefer publishing by hand? Run `npm publish --access public` first and push the tag afterwards. The
 workflow refuses to publish a version that is already on the registry, so the tag run becomes a no-op —
 but without `NPM_TOKEN` it still reports red, so create the secret either way.
 
-**State as of 1.0.0: the package is not on npm yet.** The GitHub spec
-(`github:cszi666/dsh-dev-env`) is the only install path that works today.
+**State as of 1.1.0:** `@cszi666/dsh-dev-env@1.0.0` is live on npm; 1.1.0 is not published yet. Both
+install paths work, and the npm one is the only one a clean machine can use (see [Package name](#package-name)).
+
+### Expect a browser step
+
+A package name that does not exist yet goes through npm's **staged publishing** queue. `npm publish`
+prints
+
+```
+Open this URL in your browser to authenticate:
+  https://www.npmjs.com/auth/cli/<uuid>
+```
+
+and blocks. Opening that URL in a browser and completing the 2FA challenge *is* the approval — the
+registry releases the version about two minutes later, and `npm stage list` will show nothing
+afterwards because nothing was left pending. The version exists as a `0.0.0-stage` stub with a two-file
+placeholder in the meantime, so **do not try to install the package while the publish is in flight**:
+you get a 342-byte stub that does nothing. Check with `npm view <name> dist-tags` — you want `latest`
+to point at the real version, not `0.0.0-stage`.
+
+A granular token is not enough for that browser step: it has to be a logged-in session
+(`npm login --auth-type web`, which npm 11.15+ supports). A narrowly scoped granular token fails the
+publish with `E404`; the same publish from a session gets `EOTP` instead, which is your signal that the
+permission is fine and only the human step is missing.
 
 ## 7. Finish the repository settings
 
@@ -174,14 +196,16 @@ only when they reinstall it.
 The package is published under the `@cszi666` scope because the unscoped name is temporarily
 unavailable. Timeline:
 
-- `dsh-dev-env@1.0.0` was published on 2026-10-10 and entered npm's staged-publishing queue.
-- The whole package was unpublished at **2026-10-10T05:04:46Z**, which put the name in npm's 24-hour
-  cooldown — *"If you unpublish the entire package, you may not publish any new versions of that
-  package until 24 hours have passed"*, and the unpublish also used up that name permanently for the
-  removed version.
-- The cooldown expires at **2026-10-11T05:04:46Z**. After that, `dsh-dev-env` can be published again.
+- `dsh-dev-env@1.0.0` was published on 2026-10-10T03:47Z and entered npm's staged-publishing queue.
+- The whole package was unpublished at **2026-10-10T05:04:46Z** (the staged placeholder was cleaned up
+  in the web UI). That put the name in npm's 24-hour cooldown — *"If you unpublish the entire package,
+  you may not publish any new versions of that package until 24 hours have passed"* — and the removed
+  version can never be reused.
+- The cooldown expires at **2026-10-11T05:04:46Z**, after which `dsh-dev-env` can be published again.
+- `@cszi666/dsh-dev-env@1.0.0` was published at 2026-10-10T05:41:03Z and is live.
 
-`@cszi666/dsh-dev-env` is a different name and was never affected, which is why it can ship today.
+`@cszi666/dsh-dev-env` is a different name and was never affected by the cooldown, which is why it
+could ship the same day.
 
 **To move back to the unscoped name**, change all four of these and let `npm test` confirm they agree:
 

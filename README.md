@@ -23,9 +23,23 @@ gap carries:
 - **download page** — opens the vendor's official page in the default browser;
 - **copy command** — copies the exact command line to the clipboard.
 
-Chips at the top summarise installed / missing / essential-missing / total plus the scan time, and
-the job list below shows live status with the tail of each install's output. Styling uses theme
-tokens (`--dsw-alias-*`) only, so light and dark themes both work.
+Under every row sits a one-line description of what that tool actually is, written for someone who has
+never heard of it, plus a `↗` button that opens an encyclopedia entry for it: **Baidu Baike while the
+panel is in Chinese, Wikipedia while it is in English**. Both use the site's search entry point rather
+than a fixed article URL, so a renamed article can never become a dead link, and no per-entry URL needs
+maintaining. The descriptions live in `describe.js`, keyed by entry id; `npm test` requires every
+catalog entry to have one in both languages.
+
+Chips at the top summarise installed / missing / essential-missing / total plus the scan time, and the
+job list below shows live status with the tail of each install's output. Styling uses theme tokens
+(`--dsw-alias-*`) only, so light and dark themes both work.
+
+**Installs report progress.** Each job carries a phase (`Downloading` / `Verifying` / `Installing` /
+`Done`), the last line the installer printed, and a byte figure when it prints one; the row draws a
+progress bar that is determinate when a percentage can be parsed out of the output and indeterminate
+otherwise — the panel does not invent a number it does not have. Elapsed time ticks once a second, and
+the entry being installed shows its phase inline with its buttons disabled for the whole job rather
+than just for the click. While a job runs the job list is polled once a second instead of every two.
 
 The panel header carries a language toggle and **starts in Chinese**. The button always names the
 language it would switch to, written in that language (`English` while in Chinese, `中文` while in
@@ -279,6 +293,16 @@ ctx.inject(['webServer'], (scope) => {
 reference run installed Git through it. Under a sandboxed or non-interactive shell the MSIX alias can
 fail immediately with an internal error code. The panel always shows the exit code and the log, and
 the download-page fallback is unaffected.
+
+**Installer output is not line-based, and assuming it is destroys the progress.** Progress bars are
+drawn by rewriting the same line with a bare carriage return. Splitting installer output on `\n` only —
+which is the obvious thing to do — glues every redraw into one very long line, so the percentage the
+installer was reporting is captured but unreadable. Split on `\r` as well, strip ANSI control
+sequences, and let consecutive progress lines overwrite each other instead of accumulating. A child
+process whose `stdio` is a pipe is also *not* a terminal, so most installers hide their animated bar
+entirely and print only phase lines: that is why the panel shows an indeterminate bar unless a
+percentage can actually be parsed, and why the phase and the elapsed time carry the "is it still
+working" signal.
 
 ## Limitations
 

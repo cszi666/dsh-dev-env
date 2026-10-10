@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { CATALOG, CATEGORIES } from './catalog.js'
+import { DESCRIPTIONS } from './describe.js'
 import { expandEnv, expandGlob, safeRead } from './paths.js'
 
 export const inject = ['tools']
@@ -449,6 +450,8 @@ async function scan(state, options = {}) {
           id: entry.id,
           name: entry.name,
           nameEn: entry.nameEn ?? null,
+          desc: DESCRIPTIONS[entry.id]?.zh ?? null,
+          descEn: DESCRIPTIONS[entry.id]?.en ?? null,
           category: entry.category,
           essential: entry.essential === true,
           installed: result.installed,
@@ -569,6 +572,25 @@ function trimJobs(jobs) {
   }
 }
 
+// ---------------------------------------------------------------- job progress
+//
+// 安装器画进度条的方式是「裸 \r 刷新同一行」——只按 \n 切分就会把整段刷新历史粘成一条巨长的
+// 乱行。那正是面板上看不到进度的原因：信息一直在采，只是被拼坏了。
+//
+// 这些规则把每条输出翻译成「现在走到哪一步了」，中英都要认，因为 winget 说中文、pip 说英文。
+// 顺序有意义：先判完成，否则「已成功安装」会先被 install 规则吃掉。
+const ANSI_RE = /\u001b\[[0-9;?]*[A-Za-z]/g
+const PHASE_RULES = [
+  { id: 'done', re: /成功|已完成|已安装|完成安装|Successfully|installed|Done\b/i },
+  { id: 'verify', re: /验证|哈希|校验|Verifying|hash|checksum/i },
+  { id: 'download', re: /下载|Downloading|Downloaded|Fetching|Getting/i },
+  { id: 'install', re: /安装|解压|配置|Installing|Extracting|Configuring|Building/i },
+]
+const PERCENT_RE = /(\d{1,3})\s*%/
+const SIZE_RE = /(\d+(?:[.,]\d+)?)\s*(?:KB|MB|GB)(?:\s*\/\s*\d+(?:[.,]\d+)?\s*(?:KB|MB|GB))?/i
+// 一条「进度行」的特征：带百分比、带体积，或是一串进度条字符。
+const PROGRESS_RE = /(\d{1,3}\s*%)|(\d+(?:[.,]\d+)?\s*(?:KB|MB|GB))|[▏▎▍▌▋▊▉█▓▒░#=+\-]{4,}/i
+
 function startJob(state, item, plan) {
   const job = {
     id: randomUUID().slice(0, 8),
@@ -578,6 +600,10 @@ function startJob(state, item, plan) {
     label: plan.label,
     note: plan.note ?? null,
     status: 'running',
+    phase: null,
+    percent: null,
+    size: null,
+    activity: null,
     startedAt: Date.now(),
     endedAt: null,
     exitCode: null,
@@ -591,16 +617,36 @@ function startJob(state, item, plan) {
     job.log.push(`打开下载页：${plan.url}`)
     job.status = openExternal(plan.url) ? 'succeeded' : 'failed'
     if (job.status === 'failed') job.error = '无法唤起浏览器，请手动复制链接'
+    job.phase = job.status === 'failed' ? 'install' : 'done'
+    job.activity = job.log[0]
     job.endedAt = Date.now()
     return job
   }
 
   const push = (chunk) => {
-    for (const line of String(chunk).split(/\r?\n/)) {
-      const text = line.trim()
-      if (text) job.log.push(text.slice(0, 500))
+    // 按 \r 也切开，并把 ANSI 控制序列剥掉，否则进度条会在日志里显示成乱码。
+    for (const raw of String(chunk).split(/\r\n|\r|\n/)) {
+      const text = raw.replace(ANSI_RE, '').trim()
+      if (!text) continue
+      const line = text.slice(0, 500)
+      job.activity = line
+      for (const rule of PHASE_RULES) {
+        if (rule.re.test(line)) {
+          job.phase = rule.id
+          break
+        }
+      }
+      const percent = PERCENT_RE.exec(line)
+      if (percent) job.percent = Math.max(0, Math.min(100, Number(percent[1])))
+      else if (job.phase === 'done') job.percent = 100
+      const size = SIZE_RE.exec(line)
+      if (size) job.size = size[0].replace(/\s+/g, ' ')
+      // 连续两条都是进度行 → 是同一条被刷新了，覆盖而不是追加，避免日志被刷新历史淹没。
+      const last = job.log[job.log.length - 1]
+      if (last !== undefined && PROGRESS_RE.test(line) && PROGRESS_RE.test(last)) job.log[job.log.length - 1] = line
+      else job.log.push(line)
+      if (job.log.length > MAX_LOG_LINES) job.log.splice(0, job.log.length - MAX_LOG_LINES)
     }
-    if (job.log.length > MAX_LOG_LINES) job.log.splice(0, job.log.length - MAX_LOG_LINES)
   }
 
   let child

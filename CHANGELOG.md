@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-10
+
+Two things a first-time user could not get from 1.0.0: whether an install was progressing, and what
+any of the 82 tools actually is.
+
+### Added
+
+- **A description under every row, in both languages.** `describe.js` holds one beginner-facing line
+  per catalog entry — what the tool is and what you would use it for — so adding a probe no longer
+  means editing a growing literal in `catalog.js`. `npm test` requires every entry to have both
+  languages, rejects orphan keys, and caps the length so a line cannot overflow the row.
+- **A reference link per row.** The `↗` button opens an encyclopedia entry for the tool: Baidu Baike
+  in the Chinese panel and Wikipedia in the English one, chosen by the same language toggle the rest
+  of the panel uses. Both use the site's *search* entry point rather than a fixed article URL, so a
+  renamed article cannot turn into a dead link and no per-entry URL needs maintaining.
+- **Live install progress.** Every job now carries a phase (`download` / `verify` / `install` /
+  `done`), the last output line as an activity string, a byte figure when the installer prints one,
+  and a percentage when one can be parsed.
+- **A progress bar per job**, determinate when a percentage is known and indeterminate otherwise —
+  the panel does not invent a number it does not have.
+- **A ticking elapsed time**, and the row of the entry being installed shows its phase inline with
+  its buttons disabled for the whole job, not just for the click.
+
+### Fixed
+
+- **Install output was being concatenated into one unreadable line.** Installers draw a progress bar
+  by rewriting the same line with a bare carriage return. The log split on newlines only, so every
+  redraw was glued into one very long line and the progress it carried was lost — which is why the
+  panel appeared to show no progress at all. Output is now split on `\r` as well, ANSI control
+  sequences are stripped, and consecutive progress lines overwrite each other instead of piling up.
+- **The job list is now polled once a second while a job runs** (every two seconds when idle, four
+  after a failed poll) instead of a flat two seconds, so the bar advances visibly.
+
 ## [1.0.0] - 2026-10-10
 
 The first public release. The entries under *Fixed* were defects found and corrected while building
@@ -86,4 +119,5 @@ it, and are recorded because they describe behaviour a user would otherwise hit.
 - No runtime dependencies, and no `peerDependencies` on purpose, so DSH's pre-install
   version-compatibility gate cannot block the plugin.
 
+[1.1.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.0
 [1.0.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.0.0
