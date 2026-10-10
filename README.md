@@ -128,6 +128,34 @@ from inside DSH instead:
 If the sidebar entry does not show up afterwards, refresh the page; if the panel appears but its API
 answers `404`, restart DSH once (see [Pitfalls](#pitfalls)).
 
+### Upgrading an installed copy
+
+**Installing over an existing copy is not an upgrade.** DSH keeps the old bundle row, and if the new
+generation fails to load you get
+
+```
+dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to import
+```
+
+which reads as a broken application rather than a broken plugin. `1.1.0` shipped exactly that way, so
+the order below matters. Paste this into a session:
+
+```
+I already have an older @cszi666/dsh-dev-env installed. Upgrade it to 1.1.1.
+
+Do this in order, without skipping steps:
+1. Use plugin_manager list_bundles to tell me which version is installed right now.
+2. remove_bundle it first. Do not install over it: DSH keeps the old bundle row, and if the new one
+   fails to load it reports "1 entry did not activate dev-env: failed to import", which looks like
+   the whole application is broken.
+3. install_bundle @cszi666/dsh-dev-env@1.1.1 — pinned, so the result can be checked.
+4. list_bundles again and confirm it is 1.1.1, then report the application status.
+5. If it is restart-required, tell me; do not restart the client yourself.
+```
+
+Step 4 is not ceremony: a bundle row existing is not the same as a plugin having activated. The same
+sequence works by hand — uninstall in **Settings → Plugins**, then add the pinned spec.
+
 ### With the `dsh` CLI (npm-managed profiles)
 
 ```powershell

@@ -109,6 +109,33 @@ github:cszi666/dsh-dev-env
 
 装完如果侧栏没出现，刷新页面；如果面板出现了但它的 API 返回 `404`，重启一次 DSH（见[踩坑](#踩坑)）。
 
+### 升级已安装的版本
+
+**直接覆盖安装不是升级。** DSH 会保留旧的 bundle 行，一旦新一代加载失败就会报：
+
+```
+dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to import
+```
+
+这读起来像**整个应用坏了**，而不是插件坏了。`1.1.0` 就是这么发的，所以下面的顺序不能反。
+在会话里粘贴：
+
+```
+我已经装过旧版的 @cszi666/dsh-dev-env，现在要升级到 1.1.1。
+
+请按顺序执行，不要跳步：
+1. 先用 plugin_manager 的 list_bundles 告诉我当前装的是哪个版本。
+2. 用 remove_bundle 先把它卸载掉。不要直接覆盖安装：DSH 会保留旧 bundle 行，
+   新一代加载失败时报 "1 entry did not activate dev-env: failed to import"，
+   那看起来像整个应用坏了。
+3. 用 install_bundle 安装 @cszi666/dsh-dev-env@1.1.1——版本写死，便于核对。
+4. 再用 list_bundles 确认装上的就是 1.1.1，并报告 application 状态。
+5. 如果有 restart-required 就告诉我，不要自己重启客户端。
+```
+
+第 4 步不是走过场：**"有这一行"不等于"插件激活了"**。同样的流程手动做也可以——
+在**设置 → 插件**里卸载，再添加写死版本的 spec。
+
 ### 用 `dsh` CLI（npm 管理的 profile）
 
 ```powershell
