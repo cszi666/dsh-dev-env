@@ -60,6 +60,15 @@ window.__ModuleLoader__.load({
       phaseInstall: '安装中',
       phaseDone: '完成',
       logTail: '日志尾部',
+      detail: '详情',
+      close: '收起',
+      deleteJob: '删除',
+      clearFinished: '清空已结束',
+      askDsh: '要讲解吗？',
+      explainByDsh: '让 DSH 讲解',
+      openOfficial: '打开官网',
+      explainSent: '已交给 DSH，去看对话',
+      noOfficialPage: '这个工具没有登记官网',
     }
     const DICT_EN = {
       panel: 'Dev Env',
@@ -100,6 +109,15 @@ window.__ModuleLoader__.load({
       phaseInstall: 'Installing',
       phaseDone: 'Done',
       logTail: 'log tail',
+      detail: 'Details',
+      close: 'Close',
+      deleteJob: 'Delete',
+      clearFinished: 'Clear finished',
+      askDsh: 'Explain it?',
+      explainByDsh: 'Let DSH explain',
+      openOfficial: 'Open homepage',
+      explainSent: 'Handed to DSH — check the conversation',
+      noOfficialPage: 'No homepage recorded for this tool',
     }
 
     // ------------------------------------------------------------ language
@@ -200,6 +218,13 @@ window.__ModuleLoader__.load({
 .dsh-de-activity{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .dsh-de-state.running::after{content:'';display:inline-block;width:5px;height:5px;margin-left:5px;border-radius:50%;background:currentColor;animation:dsh-de-pulse 1s ease-in-out infinite}
 @keyframes dsh-de-pulse{0%,100%{opacity:.25}50%{opacity:1}}
+.dsh-de-ok{color:var(--dsw-alias-state-success-primary)}
+.dsh-de-ask{display:flex;align-items:center;gap:6px;margin:-4px 0 10px 12px}
+.dsh-de-askq{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-grouphead{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.dsh-de-job[data-open="1"]{border-color:var(--dsw-alias-brand-primary)}
+.dsh-de-detail{margin-top:8px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l1)}
+.dsh-de-kv{display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 `
 
     // ------------------------------------------------------------ helpers
@@ -312,6 +337,9 @@ window.__ModuleLoader__.load({
       const [copied, setCopied] = React.useState(null)
       const [lang, setLang] = React.useState(currentLang)
       const [now, setNow] = React.useState(() => Date.now())
+      const [detail, setDetail] = React.useState(null)
+      const [ask, setAsk] = React.useState(null)
+      const [notice, setNotice] = React.useState(null)
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
@@ -390,15 +418,66 @@ window.__ModuleLoader__.load({
         })
       }
 
-      // 打开参考链接（百度百科 / 维基百科）。刻意不走 /install：那会往任务列表里塞一条
-      // 只是「查资料」的记录。
-      const openReference = async (item) => {
+      // 参考链接不再直接跳百科：百度百科覆盖不全，跳到空词条对新手毫无价值。
+      // 现在先给用户两个选择——让 DSH 讲解，或者打开这个工具的官网。
+      const openOfficial = async (item) => {
+        const url = (item.install && item.install.page) || null
+        if (!url) {
+          setError(t('noOfficialPage'))
+          return
+        }
         try {
           await api('/open', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: referenceUrl(item, currentLang) }),
+            body: JSON.stringify({ url }),
           })
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      const explainByDsh = async (item) => {
+        setAsk(null)
+        setBusy(item.id)
+        try {
+          await api('/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: item.id, lang: currentLang }),
+          })
+          setNotice({ itemId: item.id, text: t('explainSent') })
+          setTimeout(() => setNotice((current) => (current && current.itemId === item.id ? null : current)), 4000)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        } finally {
+          setBusy(null)
+        }
+      }
+
+      const deleteJob = async (id) => {
+        try {
+          const payload = await api('/jobs/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id }),
+          })
+          setJobs(payload.jobs || [])
+          setDetail((current) => (current === id ? null : current))
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      const clearFinished = async () => {
+        try {
+          const payload = await api('/jobs/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ scope: 'finished' }),
+          })
+          setJobs(payload.jobs || [])
+          setDetail(null)
         } catch (err) {
           setError(String((err && err.message) || err))
         }
@@ -578,7 +657,34 @@ window.__ModuleLoader__.load({
                         'div',
                         { className: 'dsh-de-desc' },
                         itemDesc(item),
-                        h('button', { className: 'dsh-de-learn', onClick: () => openReference(item) }, `↗ ${t('learn')}`),
+                        h(
+                          'button',
+                          {
+                            className: 'dsh-de-learn',
+                            onClick: () => setAsk((current) => (current === item.id ? null : item.id)),
+                          },
+                          `↗ ${t('learn')}`,
+                        ),
+                        notice && notice.itemId === item.id ? h('span', { className: 'dsh-de-ok' }, ` ${notice.text}`) : null,
+                      )
+                    : null,
+                  ask === item.id
+                    ? h(
+                        'div',
+                        { className: 'dsh-de-ask' },
+                        h('span', { className: 'dsh-de-askq' }, t('askDsh')),
+                        h('button', { className: 'dsh-de-btn primary', onClick: () => explainByDsh(item) }, t('explainByDsh')),
+                        h(
+                          'button',
+                          {
+                            className: 'dsh-de-btn',
+                            onClick: () => {
+                              setAsk(null)
+                              openOfficial(item)
+                            },
+                          },
+                          t('openOfficial'),
+                        ),
                       )
                     : null,
                   !item.installed && mainPlan && mainPlan.note
@@ -591,14 +697,23 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'dsh-de-jobs' },
-            h('div', { className: 'dsh-de-groupname' }, `${t('jobs')} · ${jobs.length}`),
+            h(
+              'div',
+              { className: 'dsh-de-grouphead' },
+              h('span', { className: 'dsh-de-groupname' }, `${t('jobs')} · ${jobs.length}`),
+              h('span', { className: 'dsh-de-spacer' }),
+              jobs.some((job) => job.status !== 'running')
+                ? h('button', { className: 'dsh-de-btn ghost', onClick: clearFinished }, t('clearFinished'))
+                : null,
+            ),
             jobs.length
               ? jobs.map((job) => {
                   const progress = progressOf(job)
                   const elapsed = durationText((job.endedAt || now) - job.startedAt)
+                  // 列表里只留一行摘要，进度细节进「详情」——失败的安装不该继续占着版面。
                   return h(
                     'div',
-                    { className: 'dsh-de-job', key: job.id },
+                    { className: 'dsh-de-job', key: job.id, 'data-open': detail === job.id ? '1' : '0' },
                     h(
                       'div',
                       { className: 'dsh-de-jobhead' },
@@ -607,7 +722,17 @@ window.__ModuleLoader__.load({
                       h('span', { className: 'dsh-de-where' }, job.label),
                       h('span', { className: 'dsh-de-spacer' }),
                       h('span', { className: 'dsh-de-badge' }, `${t('elapsed')} ${elapsed}`),
-                      h('span', { className: 'dsh-de-badge', title: timeText(job.startedAt) }, timeText(job.startedAt)),
+                      h(
+                        'button',
+                        {
+                          className: 'dsh-de-btn ghost',
+                          onClick: () => setDetail((current) => (current === job.id ? null : job.id)),
+                        },
+                        detail === job.id ? t('close') : t('detail'),
+                      ),
+                      job.status === 'running'
+                        ? null
+                        : h('button', { className: 'dsh-de-btn ghost', onClick: () => deleteJob(job.id) }, t('deleteJob')),
                     ),
                     h(
                       'div',
@@ -623,11 +748,26 @@ window.__ModuleLoader__.load({
                       progress.indeterminate ? null : h('span', { className: 'dsh-de-badge' }, `${progress.percent}%`),
                       job.size ? h('span', { className: 'dsh-de-badge' }, job.size) : null,
                     ),
-                    job.activity
-                      ? h('div', { className: 'dsh-de-activity', title: job.activity }, job.activity)
+                    // 详情：下载/安装进度、当前活动行、完整日志都在这里。
+                    detail === job.id
+                      ? h(
+                          'div',
+                          { className: 'dsh-de-detail' },
+                          h('div', { className: 'dsh-de-kv' },
+                            h('span', null, `${t('phaseInstall')}: ${phaseText(job, currentLang)}`),
+                            h('span', null, `${t('elapsed')}: ${elapsed}`),
+                            job.percent === null || job.percent === undefined ? null : h('span', null, `${job.percent}%`),
+                            job.size ? h('span', null, job.size) : null,
+                            job.exitCode === null || job.exitCode === undefined ? null : h('span', null, `exit ${job.exitCode}`),
+                          ),
+                          job.activity ? h('div', { className: 'dsh-de-activity' }, job.activity) : null,
+                          job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
+                          h('div', { className: 'dsh-de-groupname' }, t('logTail')),
+                          job.log && job.log.length
+                            ? h('pre', { className: 'dsh-de-pre' }, job.log.slice(-200).join('\n'))
+                            : h('div', { className: 'dsh-de-msg' }, t('noJobs')),
+                        )
                       : null,
-                    job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
-                    job.log && job.log.length ? h('pre', { className: 'dsh-de-pre' }, job.log.slice(-40).join('\n')) : null,
                   )
                 })
               : h('div', { className: 'dsh-de-msg' }, t('noJobs')),

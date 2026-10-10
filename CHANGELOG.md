@@ -16,10 +16,17 @@ any of the 82 tools actually is.
   per catalog entry — what the tool is and what you would use it for — so adding a probe no longer
   means editing a growing literal in `catalog.js`. `npm test` requires every entry to have both
   languages, rejects orphan keys, and caps the length so a line cannot overflow the row.
-- **A reference link per row.** The `↗` button opens an encyclopedia entry for the tool: Baidu Baike
-  in the Chinese panel and Wikipedia in the English one, chosen by the same language toggle the rest
-  of the panel uses. Both use the site's *search* entry point rather than a fixed article URL, so a
-  renamed article cannot turn into a dead link and no per-entry URL needs maintaining.
+- **A chooser behind every row's `↗` button.** The one-line description is already on screen, so the
+  button now asks what to do next: **let DSH explain it**, or **open the tool's official page**. The
+  DSH path posts to `/dsh-dev-env/api/explain`, which puts a question into the most recently active
+  session through `sessionController.prompt` and leaves the answer in the conversation, where the
+  agent can also say what the tool's state is on this machine. Encyclopaedia links are gone: Baidu
+  Baike has no entry for a good part of a developer toolchain, and landing a beginner on an empty
+  entry page is worse than not linking at all.
+- **Per-job Delete, a Clear-finished button, and a Details view.** A failed install used to sit in the
+  list with its whole log inline. The row is now a one-line summary; `Details` expands the download
+  and install progress, the current activity line, the exit code and the last 200 log lines, and
+  `Delete` removes a finished job so the list stops growing without bound.
 - **Live install progress.** Every job now carries a phase (`download` / `verify` / `install` /
   `done`), the last output line as an activity string, a byte figure when the installer prints one,
   and a percentage when one can be parsed.
@@ -30,6 +37,13 @@ any of the 82 tools actually is.
 
 ### Fixed
 
+- **Seven download pages that could not be reached.** Every `install.page` was checked with a real
+  HTTP request. Four pointed at GitHub release pages (`neovim`, `ninja`, `allure`, `redis`), which are
+  unreachable from a mainland network without an accelerator, and two at `developer.android.com`,
+  which is blocked there too. They now point at the vendor's own site (`neovim.io`,
+  `ninja-build.org`, `allurereport.org`, `redis.io`) and at Google's China mirror
+  (`developer.android.google.cn`), all verified reachable. `notepad++` moved to its SourceForge page:
+  `notepad-plus-plus.org` never answered within any sane timeout.
 - **Install output was being concatenated into one unreadable line.** Installers draw a progress bar
   by rewriting the same line with a bare carriage return. The log split on newlines only, so every
   redraw was glued into one very long line and the progress it carried was lost — which is why the

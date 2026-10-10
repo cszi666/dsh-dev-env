@@ -24,11 +24,11 @@ gap carries:
 - **copy command** — copies the exact command line to the clipboard.
 
 Under every row sits a one-line description of what that tool actually is, written for someone who has
-never heard of it, plus a `↗` button that opens an encyclopedia entry for it: **Baidu Baike while the
-panel is in Chinese, Wikipedia while it is in English**. Both use the site's search entry point rather
-than a fixed article URL, so a renamed article can never become a dead link, and no per-entry URL needs
-maintaining. The descriptions live in `describe.js`, keyed by entry id; `npm test` requires every
-catalog entry to have one in both languages.
+never heard of it, and a `↗` button that asks what to do next: **let DSH explain it**, or **open the
+tool's official page**. The DSH path posts the question to `/dsh-dev-env/api/explain`, which puts it
+into your most recently active session, so the answer lands in the conversation — where the agent can
+also say what that tool's state is on this machine. The descriptions live in `describe.js`, keyed by
+entry id; `npm test` requires every catalog entry to have one in both languages.
 
 Chips at the top summarise installed / missing / essential-missing / total plus the scan time, and the
 job list below shows live status with the tail of each install's output. Styling uses theme tokens
@@ -40,6 +40,9 @@ progress bar that is determinate when a percentage can be parsed out of the outp
 otherwise — the panel does not invent a number it does not have. Elapsed time ticks once a second, and
 the entry being installed shows its phase inline with its buttons disabled for the whole job rather
 than just for the click. While a job runs the job list is polled once a second instead of every two.
+A job row stays one line: **Details** expands the download and install progress, the current activity
+line, the exit code and the log tail, and **Delete** — or **Clear finished** — takes jobs out of the
+list so a failed install cannot occupy the panel forever.
 
 The panel header carries a language toggle and **starts in Chinese**. The button always names the
 language it would switch to, written in that language (`English` while in Chinese, `中文` while in

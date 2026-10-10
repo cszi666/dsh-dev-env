@@ -572,8 +572,38 @@ function trimJobs(jobs) {
   }
 }
 
+/**
+ * 交给 DSH 的提问文本。
+ * 面板里已经有预设的一句话说明了，所以这条提问要的是「再往下讲一层」，
+ * 并且明确带上这台机器上的当前状态——那是只有 Agent 才能顺手查的东西。
+ */
+function explainPrompt(item, lang) {
+  const english = lang === 'en'
+  const desc = english ? item.descEn || item.desc : item.desc || item.descEn
+  const state = item.installed
+    ? english
+      ? `installed (${item.version || 'version unknown'})`
+      : `已安装（${item.version || '版本未知'}）`
+    : english
+      ? `not installed${item.reason ? `: ${item.reason}` : ''}`
+      : `未安装${item.reason ? `：${item.reason}` : ''}`
+  const lines = english
+    ? [
+        `Explain the developer tool ${item.name}${item.nameEn ? ` (${item.nameEn})` : ''} in a few short paragraphs.`,
+        desc ? `Starting point: ${desc}` : '',
+        `Cover what it is, what people use it for, when a beginner would need it, and its current state on this machine: ${state}.`,
+        'Answer directly; no need to call dev_env_inventory for this.',
+      ]
+    : [
+        `请用几句话解释这个开发工具：${item.name}${item.nameEn ? `（${item.nameEn}）` : ''}。`,
+        desc ? `一句话起点：${desc}` : '',
+        `请覆盖：它是什么、典型用途、新手什么时候会需要它，以及它在这台机器上的当前状态（${state}）。`,
+        '直接回答即可，不需要为此调用 dev_env_inventory。',
+      ]
+  return lines.filter(Boolean).join('\n')
+}
+
 // ---------------------------------------------------------------- job progress
-//
 // 安装器画进度条的方式是「裸 \r 刷新同一行」——只按 \n 切分就会把整段刷新历史粘成一条巨长的
 // 乱行。那正是面板上看不到进度的原因：信息一直在采，只是被拼坏了。
 //
@@ -804,6 +834,63 @@ export function apply(ctx, config) {
       const body = await readJson(req)
       if (!openExternal(body.url)) return sendJson(res, 400, { ok: false, error: '仅支持 http(s) 链接' })
       sendJson(res, 200, { ok: true })
+    })
+
+    // 删除任务。一次失败的安装会一直占着列表，用户需要能把它清掉。
+    register('/dsh-dev-env/api/jobs/delete', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      if (body.scope === 'finished') {
+        let removed = 0
+        for (const [id, job] of [...state.jobs]) {
+          if (job.status !== 'running') {
+            state.jobs.delete(id)
+            removed += 1
+          }
+        }
+        return sendJson(res, 200, { ok: true, removed, jobs: [...state.jobs.values()] })
+      }
+      const job = state.jobs.get(body.id)
+      if (!job) return sendJson(res, 404, { ok: false, error: `未知的任务：${body.id}` })
+      // 正在跑的任务不给删：删掉记录不会停掉子进程，只会让用户失去唯一的观察窗口。
+      if (job.status === 'running') return sendJson(res, 400, { ok: false, error: '任务仍在运行，等它结束再删' })
+      state.jobs.delete(body.id)
+      sendJson(res, 200, { ok: true, removed: 1, jobs: [...state.jobs.values()] })
+    })
+
+    // 让 DSH 自己解释一个工具：把一条提问投进最近活跃的那个会话。
+    // sessionController 必须在请求时惰性获取——apply 那一刻它可能还没就绪，
+    // 一次性 ctx.get 会拿到 undefined 并且永不重试。
+    register('/dsh-dev-env/api/explain', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const data = await scan(state)
+      const item = data.items.find((entry) => entry.id === body.id)
+      if (!item) return sendJson(res, 404, { ok: false, error: `未知的条目：${body.id}` })
+      const sessions = getService(scope || ctx, 'sessionController')
+      if (!sessions || typeof sessions.prompt !== 'function') {
+        return sendJson(res, 503, { ok: false, error: '当前 DSH 没有可用的会话服务' })
+      }
+      const abort = new AbortController()
+      try {
+        const listed = await sessions.list({}, abort.signal)
+        const rows = (listed && listed.items) || []
+        // list() 按活跃度排序，第一个可用且非空白的会话就是用户正在看的那个。
+        const target = rows.find((row) => row.agentAvailable && !row.blank)
+        if (!target) return sendJson(res, 409, { ok: false, error: '没有找到可以提问的会话' })
+        await sessions.prompt(
+          {
+            requestId: `dev-env-explain-${randomUUID()}`,
+            sessionId: target.sessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: explainPrompt(item, body.lang) }],
+          },
+          abort.signal,
+        )
+        sendJson(res, 200, { ok: true, sessionId: target.sessionId, summary: `已让 DSH 解释 ${item.name}` })
+      } catch (error) {
+        sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
+      }
     })
 
     return () => {

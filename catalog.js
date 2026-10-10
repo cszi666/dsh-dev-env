@@ -238,7 +238,7 @@ export const CATALOG = [
 
   { id: 'android-studio', name: 'Android Studio', category: 'ide',
     probe: { kind: 'registry', match: 'Android Studio' },
-    install: { winget: 'Google.AndroidStudio', page: 'https://developer.android.com/studio' } },
+    install: { winget: 'Google.AndroidStudio', page: 'https://developer.android.google.cn/studio' } },
 
   { id: 'wechat-devtool', name: '微信开发者工具', nameEn: 'WeChat DevTools', category: 'ide',
     probe: { kind: 'registry', match: '微信开发者工具|WeChat DevTools' },
@@ -246,7 +246,7 @@ export const CATALOG = [
 
   { id: 'notepadpp', name: 'Notepad++', category: 'ide',
     probe: { kind: 'pathList', paths: ['%ProgramFiles%\\Notepad++', '%ProgramFiles(x86)%\\Notepad++'] },
-    install: { winget: 'Notepad++.Notepad++', page: 'https://notepad-plus-plus.org/downloads/' } },
+    install: { winget: 'Notepad++.Notepad++', page: 'https://sourceforge.net/projects/notepad-plus/' } },
 
   { id: 'sublime', name: 'Sublime Text', category: 'ide',
     probe: { kind: 'registry', match: 'Sublime Text' },
@@ -258,7 +258,7 @@ export const CATALOG = [
 
   { id: 'neovim', name: 'Neovim', category: 'ide',
     probe: { kind: 'argv', argv: ['nvim', '--version'], pattern: 'NVIM v([\\d.]+)' },
-    install: { winget: 'Neovim.Neovim', page: 'https://github.com/neovim/neovim/releases' } },
+    install: { winget: 'Neovim.Neovim', page: 'https://neovim.io/' } },
 
   // ---------------------------------------------------------------- testing tools
   { id: 'jmeter', name: 'Apache JMeter', category: 'test', essential: true,
@@ -310,7 +310,7 @@ export const CATALOG = [
 
   { id: 'allure', name: 'Allure 报告', nameEn: 'Allure report', category: 'test',
     probe: { kind: 'argv', argv: ['allure', '--version'], pattern: '([\\d.]+)' },
-    install: { winget: 'Qameta.Allure', page: 'https://github.com/allure-framework/allure2/releases' } },
+    install: { winget: 'Qameta.Allure', page: 'https://allurereport.org/' } },
 
   { id: 'appium', name: 'Appium (移动端自动化)', nameEn: 'Appium (mobile automation)', category: 'test',
     probe: { kind: 'argv', argv: ['appium', '--version'], pattern: '([\\d.]+)' },
@@ -328,7 +328,7 @@ export const CATALOG = [
       '%USERPROFILE%\\AppData\\Local\\Android\\Sdk\\platform-tools',
       '%ProgramFiles%\\Android\\platform-tools',
     ] },
-    install: { page: 'https://developer.android.com/tools/releases/platform-tools' } },
+    install: { page: 'https://developer.android.google.cn/tools/releases/platform-tools' } },
 
   { id: 'fiddler', name: 'Fiddler 抓包', nameEn: 'Fiddler (traffic capture)', category: 'test',
     probe: { kind: 'registry', match: 'Fiddler' },
@@ -361,7 +361,7 @@ export const CATALOG = [
 
   { id: 'redis', name: 'Redis', category: 'data',
     probe: { kind: 'argv', argv: ['redis-server', '--version'], pattern: 'v=([\\d.]+)' },
-    install: { winget: 'tporadowski.Redis', page: 'https://github.com/tporadowski/redis/releases' } },
+    install: { winget: 'tporadowski.Redis', page: 'https://redis.io/downloads/' } },
 
   { id: 'tomcat9', name: 'Apache Tomcat 9', category: 'data',
     probe: { kind: 'pathList', pattern: 'Apache Tomcat Version ([\\d.]+)', paths: [
@@ -403,7 +403,7 @@ export const CATALOG = [
 
   { id: 'ninja', name: 'Ninja 构建系统', nameEn: 'Ninja build system', category: 'tool',
     probe: { kind: 'argv', argv: ['ninja', '--version'], pattern: '([\\d.]+)' },
-    install: { winget: 'Ninja-build.Ninja', page: 'https://github.com/ninja-build/ninja/releases' } },
+    install: { winget: 'Ninja-build.Ninja', page: 'https://ninja-build.org/' } },
 
   { id: 'make', name: 'GNU Make', category: 'tool',
     probe: { kind: 'argv', argv: ['make', '--version'], pattern: 'GNU Make ([\\d.]+)' },
