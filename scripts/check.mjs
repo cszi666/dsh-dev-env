@@ -272,6 +272,29 @@ check('the version is valid semver and every place that records it agrees', () =
     `SECURITY.md should list "| ${minor} | Yes |" in its supported-versions table`)
 })
 
+check('documented install specs are well formed and point at this repository', () => {
+  // A malformed or stale spec in the docs is invisible until someone tries to install. Generic
+  // examples such as `github:owner/repo` are fine; a spec that names this package must name the
+  // repository's owner, and no spec may still contain placeholder angle brackets.
+  const repo = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository && pkg.repository.url
+  const match = /github\.com\/([^/\s]+)\/([^/\s#]+)/.exec(String(repo).replace(/^git\+/, ''))
+  assert(match, `cannot read owner/repo out of ${repo}`)
+  const owner = match[1]
+
+  for (const doc of ['README.md', 'README.zh-CN.md', 'docs/RELEASING.md']) {
+    const text = readFileSync(path.join(ROOT, doc), 'utf8')
+    for (const found of text.match(/github:[^\s`)\]]+/g) || []) {
+      assert(!/[<>]/.test(found), `${doc} documents a malformed spec: ${found}`)
+      const parts = /^github:([^/]+)\/(.+)$/.exec(found)
+      assert(parts, `${doc} documents a malformed spec: ${found}`)
+      const name = parts[2].replace(/\.git$/, '')
+      if (name === pkg.name) {
+        assert(parts[1] === owner, `${doc} points ${name} at "${parts[1]}", expected "${owner}"`)
+      }
+    }
+  }
+})
+
 check('docs/RELEASING.md tracks the current version', () => {
   // docs/RELEASING.md walks a maintainer through the release; a stale version there is a trap.
   const releasing = readFileSync(path.join(ROOT, 'docs/RELEASING.md'), 'utf8')

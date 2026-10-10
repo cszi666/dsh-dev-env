@@ -60,30 +60,48 @@ DSH Web 界面里的一个全局面板：`sidebar.panellist` 中 id 为 `dev-env
 
 ## 安装
 
-两种发布渠道都支持。`<profile>` 通常就是你在用的那个 profile，例如 `desktop`。
+所有方式用的是同一个 spec：
 
-从 npm 安装：
+```
+github:cszi666/dsh-dev-env
+```
+
+### 在 DSH 桌面版里（不需要 CLI）
+
+桌面版把 CLI 打包在 `app.asar` 内部、不会暴露到 `PATH`，而且 **`desktop` profile 归 Electron 所有**——
+用 npm 装的 `dsh` CLI 会被拒绝管理它。所以在 DSH 内部安装：
+
+- **直接吩咐 Agent。** 在任意会话里粘贴：
+
+  ```
+  安装 DSH 插件 github:cszi666/dsh-dev-env
+  ```
+
+  Agent 会用 `plugin_manager` 发起 `action: install_bundle`、`target` 填这个 spec，并应用到当前 profile。
+  它会请求授权，同意即可（`plugin_manager` 需要 `danger-full-access` 或单次批准）。如果你的 Agent 预设没有
+  暴露这个工具，就用下面的面板。
+- **或者用面板。** **设置 → 插件**，粘贴同一个 spec。
+
+装完如果侧栏没出现，刷新页面；如果面板出现了但它的 API 返回 `404`，重启一次 DSH（见[踩坑](#踩坑)）。
+
+### 用 `dsh` CLI（npm 管理的 profile）
+
+```powershell
+npm install -g @deepseek-ai/dsh        # 还没有 CLI 才需要
+dsh plugin --profile <profile> add github:cszi666/dsh-dev-env
+```
+
+`dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，所以任何 pnpm spec 都成立：
+`github:owner/repo`、`https://github.com/owner/repo`、`.tgz` 链接、版本范围都行。`<profile>` 填你在用的那个
+profile——**不能填 `desktop`**，它归 Electron 应用所有。
+
+等包发布到 npm 之后，整个 spec 可以简化成：
 
 ```powershell
 dsh plugin --profile <profile> add dsh-dev-env
 ```
 
-从 GitHub 安装：
-
-```powershell
-dsh plugin --profile <profile> add github:<cszi666>/dsh-dev-env
-```
-
-这两条命令要求 `dsh` 在 `PATH` 里。桌面版把 CLI 打包在 `app.asar` 内部，不会把它暴露到 `PATH`（这是常态）；
-如果找不到 `dsh`，改用下面任意一种：
-
-- DSH Web 界面 —— **设置 → 插件**，粘贴同一个 spec；
-- 交给 Agent —— 用 `plugin_manager` 工具，`action: install_bundle`，`target` 填同一个 spec；
-- `npx @deepseek-ai/dsh plugin --profile <profile> add <spec>` —— CLI 就是已发布的 `@deepseek-ai/dsh` 包，
-  所以不用全局安装也能用 `npx` 跑起来。
-
-spec 也可以是 `https://github.com/...` 形式的 URL，或者一个 `.tar.gz` 链接。对 GitHub 仓库，DSH 会先用
-`git ls-remote` 确认可达性，再安装。
+对 GitHub 仓库，DSH 会先用 `git ls-remote` 确认可达性，所以账号或仓库名打错会立刻失败，而不是装到一半才报错。
 
 ## 工作原理
 

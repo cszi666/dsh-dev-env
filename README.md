@@ -71,30 +71,52 @@ HTTP endpoint accepts `auto` or one of the plan modes.
 
 ## Install
 
-Both publishing channels work. `<profile>` is normally the profile you run, for example `desktop`.
+The spec is the same string everywhere:
 
-From npm:
+```
+github:cszi666/dsh-dev-env
+```
+
+### In the DSH desktop app (no CLI needed)
+
+The desktop build bundles its CLI inside `app.asar` and does not put `dsh` on `PATH` — and the
+`desktop` profile is Electron-owned, so an npm-installed `dsh` CLI refuses to manage it. Install it
+from inside DSH instead:
+
+- **Ask the agent.** Paste this into any session:
+
+  ```
+  Install the DSH plugin github:cszi666/dsh-dev-env
+  ```
+
+  The agent calls `plugin_manager` with `action: install_bundle` and that spec, and the install is
+  applied to your live profile. Approve the request when it is asked for — `plugin_manager` needs
+  `danger-full-access` or a per-call approval. If your agent preset does not expose that tool, use the
+  panel below.
+- **Or use the panel.** **Settings → Plugins**, and paste the same spec.
+
+If the sidebar entry does not show up afterwards, refresh the page; if the panel appears but its API
+answers `404`, restart DSH once (see [Pitfalls](#pitfalls)).
+
+### With the `dsh` CLI (npm-managed profiles)
+
+```powershell
+npm install -g @deepseek-ai/dsh        # only if you do not have it yet
+dsh plugin --profile <profile> add github:cszi666/dsh-dev-env
+```
+
+`dsh plugin` forwards its arguments to pnpm inside the profile directory, so every pnpm spec works:
+`github:owner/repo`, `https://github.com/owner/repo`, a `.tgz` URL, or a version range. `<profile>` is
+whichever profile you run — it **cannot be `desktop`**, which belongs to the Electron app.
+
+Once the package is on npm, the shorter form replaces the whole spec:
 
 ```powershell
 dsh plugin --profile <profile> add dsh-dev-env
 ```
 
-From GitHub:
-
-```powershell
-dsh plugin --profile <profile> add github:<cszi666>/dsh-dev-env
-```
-
-Those two commands need `dsh` on your `PATH`. The desktop build bundles the CLI inside `app.asar` and
-does not expose it on `PATH`, which is the normal case; if `dsh` is not found, use any of:
-
-- the DSH Web UI — **Settings → Plugins**, and paste the same spec;
-- an agent session — the `plugin_manager` tool with `action: install_bundle` and the same spec;
-- `npx @deepseek-ai/dsh plugin --profile <profile> add <spec>` — the CLI is the published
-  `@deepseek-ai/dsh` package, so `npx` runs it without a global install.
-
-The spec may also be an `https://github.com/...` URL or a `.tar.gz` link. For a GitHub repo, DSH
-checks reachability with `git ls-remote` before installing.
+For a GitHub repo DSH checks reachability with `git ls-remote` before installing, so a typo in the
+account or repository name fails immediately instead of half-way through.
 
 ## How it works
 

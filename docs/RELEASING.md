@@ -86,20 +86,26 @@ git push -u origin main
 
 ## 4. Test the GitHub install path
 
-Do this in a **separate DSH profile**, not the one that already has the plugin installed as a
-`link:` — installing from GitHub would otherwise replace your development copy.
+Use a **separate DSH profile** for this. The maintainer's own profile already has the plugin installed
+as a `link:` to the working copy, and installing from GitHub would replace it.
 
-```
-dsh plugin --profile <other-profile> add github:cszi666/dsh-dev-env
-```
+How you install depends on who you are:
 
-Or in the Web UI: Settings → Plugins → paste the spec. Or through an agent: `plugin_manager` with
-`action: install_bundle` and the same `target`. DSH checks the repo with `git ls-remote` before
-installing, so a typo in the account name fails fast and clearly.
+- **Desktop app, ordinary user.** Ask the agent — paste `Install the DSH plugin
+  github:cszi666/dsh-dev-env` into a session — or use **Settings → Plugins**. An npm-installed `dsh`
+  CLI *cannot* manage the `desktop` profile, which is Electron-owned; only the Desktop build's own
+  bundled command can.
+- **`dsh` CLI, another profile.** `dsh plugin --profile <profile> add github:cszi666/dsh-dev-env`.
+  `dsh plugin` forwards its arguments to pnpm inside the profile directory, so any pnpm spec works.
+  `<profile>` cannot be `desktop`.
 
-Confirm the panel appears and returns data. A panel that renders but answers `404` on
-`/dsh-dev-env/api/*` means the `webServer` injection is wrong — see the Pitfalls section of
-[../README.md](../README.md).
+DSH checks the repo with `git ls-remote` before installing, so a typo in the account or repository name
+fails fast and clearly.
+
+Then confirm the panel appears **and returns data**. A panel that renders but answers `404` on
+`/dsh-dev-env/api/*` means the `webServer` injection did not run — see the Pitfalls section of
+[../README.md](../README.md). Check the install result's `application` field rather than just the
+appearance of a row: a row can be selected while its plugin failed to activate.
 
 ## 5. Publish to npm
 
@@ -118,19 +124,28 @@ Sanity-check the tarball first if you changed `files[]`:
 npm pack --dry-run
 ```
 
-It should list 13 files and no `.github/` directory.
+It should list 16 files and no `.github/` directory.
 
 ## 6. Tag the release
+
+Set up npm publishing **before** pushing the tag, otherwise the tag triggers a workflow run that fails
+on a missing secret. Create an npm automation token, then store it as the repository secret `NPM_TOKEN`
+(Settings → Secrets and variables → Actions → New repository secret), and only then:
 
 ```powershell
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-That also triggers `.github/workflows/release.yml`, which publishes to npm for later releases once the
-`NPM_TOKEN` repository secret exists (an npm automation token). For 1.0.0 you have already published
-by hand; the workflow refuses to publish a version that is already on the registry, so a tag-triggered
-run at this point is harmless but redundant.
+That publishes the package through `.github/workflows/release.yml`, and gives the link at the bottom of
+`CHANGELOG.md` (`releases/tag/v1.0.0`) something to resolve to.
+
+Prefer publishing by hand? Run `npm publish --access public` first and push the tag afterwards. The
+workflow refuses to publish a version that is already on the registry, so the tag run becomes a no-op —
+but without `NPM_TOKEN` it still reports red, so create the secret either way.
+
+**State as of 1.0.0: the package is not on npm yet.** The GitHub spec
+(`github:cszi666/dsh-dev-env`) is the only install path that works today.
 
 ## 7. Finish the repository settings
 
