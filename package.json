@@ -32,7 +32,8 @@
   },
   "scripts": {
     "test": "node scripts/check.mjs",
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs",
+    "prepublishOnly": "node scripts/check.mjs"
   },
   "icon": "./icon.svg",
   "meta": {
