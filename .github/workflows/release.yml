@@ -1,0 +1,50 @@
+# Publishes the package to npm when a version tag is pushed, e.g.
+#
+#   npm version patch        # bumps package.json and creates the tag
+#   git push --follow-tags
+#
+# Setup (once): create an npm automation token and store it as the repository secret
+# NPM_TOKEN (Settings -> Secrets and variables -> Actions -> New repository secret).
+#
+# Publishing manually instead? Just run `npm publish` from a clean checkout; the package
+# has no dependencies and no build step, so there is nothing else to do.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # allows npm provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Self-check before publishing
+        run: npm test
+
+      - name: Verify the tag matches package.json
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "package.json ($PKG_VERSION) does not match tag ($TAG_VERSION)" >&2
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

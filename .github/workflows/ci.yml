@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    # The plugin targets Windows: it reads the Windows uninstall registry and drives
+    # winget, and the resolver tests that touch the filesystem only run there.
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Syntax check every shipped module
+        shell: pwsh
+        run: |
+          foreach ($file in 'index.js', 'client.js', 'catalog.js', 'paths.js', 'scripts/check.mjs') {
+            node --check $file
+            if ($LASTEXITCODE -ne 0) { throw "syntax error in $file" }
+          }
+
+      - name: Catalog, resolver and packaging self-check
+        run: npm test

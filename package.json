@@ -1,0 +1,79 @@
+{
+  "name": "dsh-dev-env",
+  "version": "1.0.0",
+  "description": "DSH plugin: inventory your Windows dev/test toolchain, spot the gaps, and fill them with one click.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "developer-environment",
+    "toolchain",
+    "winget",
+    "devtools",
+    "windows"
+  ],
+  "license": "GPL-3.0-or-later",
+  "author": {
+    "name": "樱色是最好的",
+    "email": "cszi666@users.noreply.github.com",
+    "url": "https://github.com/cszi666"
+  },
+  "homepage": "https://github.com/cszi666/dsh-dev-env#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cszi666/dsh-dev-env.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cszi666/dsh-dev-env/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node scripts/check.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "Dev Env Inspector",
+    "description": "A sidebar panel that lists the toolchains installed on this machine with exact versions, highlights what is missing, and installs the gaps via winget / npm / pip."
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "catalog.js",
+    "paths.js",
+    "scripts/check.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

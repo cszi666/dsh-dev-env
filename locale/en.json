@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Dev Env Inspector",
+    "description": "A sidebar panel that lists the toolchains installed on this machine with exact versions, highlights what is missing, and installs the gaps via winget / npm / pip."
+  }
+}
