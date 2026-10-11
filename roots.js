@@ -88,6 +88,9 @@ export function mergeRoots(envValue, stored) {
  *
  * 返回 null 表示这个条目不适用（不是 pathList）——那种情况下不该给用户显示"选择文件夹"，
  * 因为它认的是注册表或 PATH，选目录不会有用，显示出来只会让人以为插件坏了。
+ *
+ * 文案里说"工具自己的目录**或**它的上一级"是照着实现写的：探针会把这一层降回父目录再试一次
+ * （见 paths.js 的 parentDirStartingPoint），所以两种选法都作数。提示和代码必须说的是同一件事。
  */
 export function describeProbeHint(entry) {
   const probe = entry?.probe
@@ -99,12 +102,12 @@ export function describeProbeHint(entry) {
 
   if (evidence.length) {
     const what = evidence.join('、且')
-    return `请选择包含该工具的目录本身（${what}）。选它的上一级不算。`
+    return `请选择包含该工具的目录本身（${what}），或者它的上一级目录。`
   }
   if (probe.pattern) {
-    return `请选择目录名匹配 ${probe.pattern} 的那一层（工具自己的目录），不是它的上一级。`
+    return `请选择目录名匹配 ${probe.pattern} 的那一层（工具自己的目录），或者它的上一级目录。`
   }
-  return '请选择该工具自己的目录，不是它的上一级。'
+  return '请选择该工具自己的目录，或者它的上一级目录。'
 }
 
 /**
