@@ -11,7 +11,7 @@
  * bundle patch and the client entry.
  */
 
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, statSync } from 'node:fs'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,6 +19,15 @@ import { fileURLToPath } from 'node:url'
 
 import { CATALOG, CATEGORIES } from '../catalog.js'
 import { DESCRIPTIONS } from '../describe.js'
+import {
+  createSpeedMeter,
+  compareVersions,
+  filesInListing,
+  metaPathFor,
+  partPathFor,
+  resolveDownload,
+  startDownload,
+} from '../downloads.js'
 import {
   expandEnv,
   expandGlob,
@@ -58,6 +67,9 @@ function check(name, fn) {
 const assert = (condition, message) => {
   if (!condition) throw new Error(message)
 }
+
+/** One turn of the event loop, for the few checks that have to wait on real file/stream work. */
+const drainOnce = () => new Promise((resolve) => setImmediate(resolve))
 
 console.log(`\ndsh-dev-env self-check  (node ${process.version}, ${process.platform})\n`)
 
@@ -494,8 +506,212 @@ check('a tool folder that carries a version file needs the level above it to be 
   }
 })
 
+// ------------------------------------------------------------------ download sources
+console.log('\ndownload sources')
+
+const JMETER_SOURCE = CATALOG.find((entry) => entry.id === 'jmeter')?.install?.download
+
+check('the jmeter download source points at a listing, not a pinned file', () => {
+  // A pinned URL carries the version (`…/apache-jmeter-5.6.3.zip`) and rots at the next release,
+  // silently: a 404 is indistinguishable from an unreachable network until someone asks.
+  assert(JMETER_SOURCE, 'the jmeter entry should declare install.download')
+  assert(typeof JMETER_SOURCE.listing === 'string' && !JMETER_SOURCE.listing.includes('apache-jmeter-'),
+    `expected a directory listing, got ${JMETER_SOURCE.listing}`)
+  assert(!JMETER_SOURCE.direct, 'the current release must not be pinned')
+  assert(typeof JMETER_SOURCE.fileNamePattern === 'string' && JMETER_SOURCE.fileNamePattern,
+    'a listing needs fileNamePattern to pick the archive out of it')
+  new RegExp(JMETER_SOURCE.fileNamePattern) // must compile
+  assert(JMETER_SOURCE.fallback?.listing, 'a listing that only keeps the current release needs a fallback')
+})
+
+check('compareVersions orders numerically, not as text', () => {
+  // Text order would pick 5.9 over 5.10 and quietly install an older release.
+  assert(compareVersions('5.10', '5.9') > 0, '5.10 is newer than 5.9')
+  assert(compareVersions('5.6.3', '5.6.2') > 0, 'patch bump')
+  assert(compareVersions('5.6.3', '5.6.3') === 0, 'equal')
+  assert(compareVersions('11.0.2', '9.9.9') > 0, 'major bump')
+})
+
+check('filesInListing resolves hrefs and ignores everything else', () => {
+  const html = `
+    <a href="apache-jmeter-5.6.3.zip">zip</a>
+    <a href="apache-jmeter-5.6.3.tgz">tgz</a>
+    <a href="apache-jmeter-5.6.3.zip.sha512">checksum</a>
+    <a href="../">up</a>
+    <a href="https://elsewhere.example/absolute.zip">absolute</a>`
+  const files = filesInListing(html, 'https://dlcdn.apache.org/jmeter/binaries/')
+  assert(files.includes('https://dlcdn.apache.org/jmeter/binaries/apache-jmeter-5.6.3.zip'), `got ${JSON.stringify(files)}`)
+  assert(files.includes('https://elsewhere.example/absolute.zip'), 'absolute hrefs must survive')
+  assert(!files.some((url) => url.endsWith('.sha512')), 'checksums are not archives')
+  assert(files.length === 3, `expected 3 archives, got ${JSON.stringify(files)}`)
+})
+
+check('resolveDownload picks the newest archive a listing offers, and verifies it', async () => {
+  // No network: the fetch double answers the listing and the probe, so this guard is hermetic.
+  const listingUrl = 'https://mirror.example/tool/binaries/'
+  const listing = `
+    <a href="tool-5.9.zip">old</a>
+    <a href="tool-5.10.zip">new</a>
+    <a href="tool-5.2.zip">older</a>
+    <a href="tool-5.10.zip.sha512">checksum</a>`
+  const probed = []
+  const fetchImpl = async (url) => {
+    if (url === listingUrl) return { ok: true, status: 200, text: async () => listing }
+    return { ok: true, status: 500, text: async () => '' }
+  }
+  const probe = async (url) => {
+    probed.push(url)
+    return url.endsWith('tool-5.10.zip') ? { status: 200, total: 1234, etag: '"abc"', lastModified: null } : { status: 404, total: null }
+  }
+  const resolved = await resolveDownload({ listing: listingUrl, fileNamePattern: '^tool-([\\d.]+)\\.zip$' }, { fetchImpl, probe })
+  assert(resolved, 'expected a resolution')
+  assert(resolved.url === `${listingUrl}tool-5.10.zip`, `picked ${resolved.url}`)
+  assert(resolved.version === '5.10', `version came out as ${resolved.version}`)
+  assert(resolved.total === 1234, `size came out as ${resolved.total}`)
+  assert(probed[0] === `${listingUrl}tool-5.10.zip`, 'the newest candidate must be verified first')
+})
+
+check('resolveDownload falls back, and reports failure instead of guessing', async () => {
+  const primary = 'https://primary.example/binaries/'
+  const secondary = 'https://archive.example/dist/binaries/'
+  const spec = {
+    listing: primary,
+    fileNamePattern: '^tool-([\\d.]+)\\.zip$',
+    fallback: { listing: secondary, fileNamePattern: '^tool-([\\d.]+)\\.zip$' },
+  }
+  const fetchImpl = async (url) => {
+    if (url === primary) return { ok: true, status: 200, text: async () => '<a href="tool-9.0.zip">x</a>' }
+    return { ok: true, status: 200, text: async () => '<a href="tool-8.0.zip">x</a>' }
+  }
+
+  // Primary answers but its file 404s → the fallback must be tried.
+  const fallbackProbe = async (url) => (url.startsWith(secondary) ? { status: 200, total: 10 } : { status: 404 })
+  const fromFallback = await resolveDownload(spec, { fetchImpl, probe: fallbackProbe })
+  assert(fromFallback?.url === `${secondary}tool-8.0.zip`, `got ${JSON.stringify(fromFallback)}`)
+
+  // Nothing verifies → null, so the caller reports "nothing to download" rather than a URL that
+  // would fail mid-transfer.
+  const nothing = await resolveDownload(spec, { fetchImpl, probe: async () => null })
+  assert(nothing === null, `expected null, got ${JSON.stringify(nothing)}`)
+
+  // An unreachable listing must not throw either.
+  const offline = await resolveDownload(spec, {
+    fetchImpl: async () => {
+      throw new Error('fetch failed')
+    },
+    probe: async () => ({ status: 200, total: 1 }),
+  })
+  assert(offline === null, 'an unreachable listing must resolve to null')
+})
+
+check('a direct source needs no listing and is verified the same way', async () => {
+  const url = 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip'
+  const resolved = await resolveDownload({ direct: url }, {
+    fetchImpl: async () => {
+      throw new Error('a direct source must not fetch a listing')
+    },
+    probe: async (probed) => (probed === url ? { status: 200, total: 7_700_000 } : { status: 404 }),
+  })
+  assert(resolved?.url === url, `got ${JSON.stringify(resolved)}`)
+  assert(resolved.total === 7_700_000, 'the size must come through: it is what makes a speed and ETA possible')
+})
+
+check('a download reports monotonic progress, a rate and a finite ETA, then lands the file', async () => {
+  // The engine's speed/ETA maths used to be covered only by synthetic samples. This drives a real
+  // (if in-memory) transfer through startDownload: chunked, time-stamped, and then verified on disk.
+  const CHUNK = 100_000
+  const CHUNKS = 10
+  const total = CHUNK * CHUNKS
+  const dir = path.join(os.tmpdir(), `dsh-dev-env-dl-${process.pid}`)
+  const file = path.join(dir, 'sample.bin')
+  let tick = 0
+  const clock = () => 1_700_000_000_000 + (tick += 200) // 200 ms between chunks
+  const meter = createSpeedMeter({ windowMs: 8000 })
+  // Feed the meter its own clock, so the rate is a real division of bytes by elapsed time.
+  const originalSample = meter.sample.bind(meter)
+  meter.sample = (received) => originalSample(received, clock())
+
+  const stream = new ReadableStream({
+    start(controller) {
+      for (let index = 0; index < CHUNKS; index += 1) controller.enqueue(new Uint8Array(CHUNK))
+      controller.close()
+    },
+  })
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-length': String(total) }),
+    body: stream,
+  })
+
+  const snapshots = []
+  try {
+    const handle = startDownload({ url: 'https://example.test/sample.bin', file, total, fetchImpl, meter, onProgress: (s) => snapshots.push(s) })
+    const result = await handle.promise
+
+    assert(result.bytes === total, `downloaded ${result.bytes}, expected ${total}`)
+    assert(existsSync(file) && statSync(file).size === total, 'the finished file should be on disk at full size')
+    assert(!existsSync(partPathFor(file)) && !existsSync(metaPathFor(file)), 'no .part or metadata should survive success')
+
+    assert(snapshots.length === CHUNKS, `expected ${CHUNKS} progress reports, got ${snapshots.length}`)
+    for (let index = 1; index < snapshots.length; index += 1) {
+      assert(snapshots[index].received >= snapshots[index - 1].received, 'progress must never go backwards')
+    }
+    const last = snapshots[snapshots.length - 1]
+    assert(last.percent === 100, `the last report should be 100%, got ${last.percent}`)
+    assert(last.total === total, `the total should be known, got ${last.total}`)
+
+    // Rate and ETA are real numbers derived from the samples, not placeholders.
+    const middle = snapshots[Math.floor(snapshots.length / 2)]
+    assert(Number.isFinite(middle.liveBytesPerSecond) && middle.liveBytesPerSecond > 0,
+      `a rate should be measurable, got ${middle.liveBytesPerSecond}`)
+    assert(Number.isFinite(middle.etaSeconds) && middle.etaSeconds >= 0,
+      `an ETA should be finite, got ${middle.etaSeconds}`)
+    // 100 KB per 200 ms is 500 KB/s, so a half-finished transfer is a handful of seconds.
+    assert(middle.expectedBytesPerSecond > 400_000 && middle.expectedBytesPerSecond < 600_000,
+      `the rate should be about 500 KB/s, got ${middle.expectedBytesPerSecond}`)
+    assert(middle.etaSeconds >= 1 && middle.etaSeconds <= 20, `a plausible ETA, got ${middle.etaSeconds}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('cancelling a download deletes the partial file and its metadata', async () => {
+  // The promise the cancel button makes. Verified against a real transfer in tools/download-cancel-e2e.mjs;
+  // this is the hermetic version, so a regression fails npm test rather than needing a network.
+  const dir = path.join(os.tmpdir(), `dsh-dev-env-cancel-${process.pid}`)
+  const file = path.join(dir, 'sample.bin')
+  let pulled = 0
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulled += 1
+      controller.enqueue(new Uint8Array(40_000))
+    },
+  })
+  const handle = startDownload({
+    url: 'https://example.test/sample.bin',
+    file,
+    total: 40_000_000,
+    fetchImpl: async () => ({ ok: true, status: 200, headers: new Headers({ 'content-length': '40000000' }), body: stream }),
+  })
+  try {
+    // Wait until bytes are actually on disk, so the cancel has something to clean up.
+    for (let attempt = 0; attempt < 200 && !existsSync(partPathFor(file)); attempt += 1) await drainOnce()
+    assert(existsSync(partPathFor(file)), 'the transfer should have created a .part file')
+    handle.cancel()
+    await handle.promise.catch(() => undefined)
+    assert(!existsSync(partPathFor(file)), 'cancel must delete the .part file')
+    assert(!existsSync(metaPathFor(file)), 'cancel must delete the metadata')
+    assert(!existsSync(file), 'cancel must not leave a finished-looking file behind')
+  } finally {
+    handle.cancel()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
+
 
 const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 

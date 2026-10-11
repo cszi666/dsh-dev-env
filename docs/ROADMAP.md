@@ -188,8 +188,55 @@ cancel button, not by this: winget stalled on a blocked host, and fetching the f
 helps where *we* can reach it. Small, honest, and verified beats a general mechanism that mostly
 cannot run.
 
-The three URLs above are still to be wired, plus a live check of `downloads.js`'s speed/ETA maths
-against the 86 MB JMeter zip — the gap noted below.
+#### Wired, for `jmeter` — **done**
+
+`downloads.js` now owns URL resolution as well as transfer, because the catalog cannot hold a usable
+URL for this entry: `dlcdn.apache.org` keeps only the current release and its filename carries the
+version, so a pinned URL rots at the next release — silently, since a 404 is indistinguishable from an
+unreachable network. So `install.download` says *where to look*:
+
+```js
+download: { listing: 'https://dlcdn.apache.org/jmeter/binaries/',
+            fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$',
+            fallback: { listing: 'https://archive.apache.org/dist/jmeter/binaries/', … } }
+```
+
+`resolveDownload()` reads the listing, takes the **numerically** newest match (`compareVersions`, so
+5.10 beats 5.9 where text order would pick 5.9), verifies it with the same HEAD/Range probe a resume
+uses, and falls back only if the primary yields nothing. It returns the size, which is the whole point:
+winget cannot report one when its output is piped, and without a size there is no honest speed or ETA.
+
+`choosePlan` prefers a managed installer over `download` on purpose — winget owns upgrades and
+uninstall, while a file we fetch does not. `download` is used when it is the only real option, or when
+the user asks for it by name.
+
+The download job reuses the same `job` object, so the panel and `dev_env_job` need no new concepts:
+`receivedBytes`, `totalBytes`, `bytesPerSecond`, `etaSeconds` join `percent` and `activity`, and
+`downloadCancels` maps a job id to a cancel closure that interrupts the transfer and deletes `.part`
+plus metadata — so the cancel route's `partial-cleanup` branch finally has something to clean.
+
+**Verified on this machine** (each step, with the real 86 MB archive):
+
+| step | evidence |
+|---|---|
+| resolution | `apache-jmeter-5.6.3.zip`, `total: 90631635`, `etag`, from the listing, in 413 ms |
+| transfer | 86.4 MB in 6.6 s; **downloaded size === Content-Length** exactly |
+| rate / ETA | real numbers, 13–19 MB/s, ETA 1–5 s, matching the observed wall clock |
+| cancel mid-transfer | at 4.8%: `.part` + metadata gone, `cleanup: partial-removed`, no leftovers |
+| extraction | `tar -xf <zip> -C <dir>` → `<dir>\apache-jmeter-5.6.3` with `bin\jmeter.bat`, `lib\ext` |
+| recognition | the same probe reports `installed: true, version: 5.6.3`; the folder is registered as an extra root |
+
+Two things about verifying this are worth keeping:
+
+- **The DSH sandbox blocks Node from spawning with piped stdio** (`spawn EPERM`). `npm test` still runs
+  `run(['npm', …])` fine because the plugin host's own spawns use different stdio, but a *test process*
+  cannot extract a zip. The extraction was therefore verified by running the byte-identical `tar`
+  command in PowerShell, and the probe by pointing it at the real extracted folder.
+- `tools/download-prepare.mjs` writes the 86 MB archive into `out/` (gitignored). Nothing in `npm test`
+  touches the network.
+
+`adb` (7.7 MB, `dl.google.com`) and `junit` (2.7 MB, Maven Central) resolve the same way and are the
+obvious next two entries; the census above has their verified URLs.
 
 ### 7. Release 1.1.2
 
@@ -200,8 +247,19 @@ already expired.
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).
-- **The download engine's speed/ETA maths** is covered by unit tests with synthetic samples, not by a
-  long real download — a small file finishes in one chunk. Verify it during step 6 with a real entry.
+- ~~**The download engine's speed/ETA maths** is covered by unit tests with synthetic samples…~~
+  **Closed:** measured live on the real 86 MB JMeter archive (13–19 MB/s, ETA 1–5 s, matching the wall
+  clock), and `npm test` now drives a chunked transfer through `startDownload` with a time-stamped
+  meter and asserts the rate and ETA are real numbers.
+- **Resume is implemented but has never been exercised on a real interrupted transfer.** `decideResume`
+  and the `Range` path are unit-covered, `dlcdn.apache.org` does advertise `accept-ranges: bytes`, and
+  the cancel path deletes partials — so the interesting case is "the network dropped mid-transfer and
+  nobody cancelled it". Nothing here can simulate that (`clumsy` and `tc` are not installed; `netsh`
+  could, but it is a machine-wide change). Verify by hand: start a download, cut the network, restart
+  DSH, and check that the next attempt reports `从 … 处继续`.
+- **`adb` and `junit` have verified direct URLs but no `install.download` yet.** Both were probed
+  successfully (see step 6); only `jmeter` is wired, because that is the entry the complaint was about
+  and the one whose URL needed discovery rather than a constant.
 - **`winget` gives no size or speed when its output is piped.** The panel shows an indeterminate bar
   and the elapsed time instead of inventing a number.
 - **A cancelled `winget` install cannot have its downloaded cache removed** — it is opaque and not

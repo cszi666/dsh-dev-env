@@ -9,6 +9,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Download a tool ourselves, with a real speed, ETA and resume.** `downloads.js` was written and
+  verified but nothing imported it, so it was inert. It is now wired for `jmeter`, the entry whose
+  install stalled in the first place. A managed installer (`winget` / `pip` / `npm`) reports no size
+  and no rate when its output is piped and offers no resume, so "progress like a browser" is only
+  possible for a file we fetch ourselves: the job now carries `receivedBytes`, `totalBytes`,
+  `bytesPerSecond` and `etaSeconds`, and the panel shows the rate and the remaining time. Cancelling
+  interrupts the transfer and deletes the `.part` file and its metadata, so the cancel route's
+  `partial-removed` branch finally has something to clean.
+- **Download URLs are discovered, not pinned.** Apache's mirror keeps only the current release and its
+  filename carries the version, so a hardcoded URL starts rotting at the next release — silently, since
+  a 404 looks exactly like an unreachable network. `install.download` therefore describes *where to
+  look*; `resolveDownload()` reads the listing, takes the numerically newest match (`compareVersions`,
+  so 5.10 beats 5.9), verifies it with the same probe a resume uses, and falls back to the archive only
+  if the mirror yields nothing.
 - **Point the scanner at a tool it cannot guess: extra roots, without restarting DSH.** Some tools
   are unzipped into a folder of the user's own — the registry has never heard of them and `PATH` does
   not contain them, so no fixed candidate list can find them. The escape hatch used to be the

@@ -19,3 +19,7 @@ Desktop.ini
 # Packaging
 *.tgz
 *.tar.gz
+
+# Scratch space for the manual download checks: tools/download-prepare.mjs writes an 86 MB archive
+# plus its extraction here. Never part of the package, never worth committing.
+out/

@@ -465,7 +465,7 @@ export async function runClientCancelTests(harness) {
       react.current.cursor = 0
       uiWorkspace = extra.uiWorkspace ?? null
       bootApply()
-      let jobs = [JOB]
+      let jobs = [extra.job ? Object.assign({}, JOB, extra.job) : JOB]
       let roots = extra.roots ?? []
       const inventory = extra.inventory ?? INVENTORY
       mock = ({ path: target, method, body }) => {
@@ -583,8 +583,40 @@ export async function runClientCancelTests(harness) {
       if (!buttonByText(tree, '取消')) throw new Error('the row must stay usable so the user can retry')
     })
 
-    // ------------------------------------------------------------ extra folders
-    // The "already installed? pick its folder" feature. Two halves matter: which rows offer the
+    await harness.check('a job we downloaded ourselves shows a real rate and ETA', async () => {
+      // Only our own downloads have these numbers. A managed installer (winget etc.) prints no size
+      // when its output is piped, so showing an invented rate there would be a lie.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: {
+          mode: 'download',
+          status: 'running',
+          phase: 'download',
+          percent: 42,
+          receivedBytes: 39_000_000,
+          totalBytes: 90_631_635,
+          bytesPerSecond: 13_300_000,
+          etaSeconds: 4,
+        },
+      })
+      clickButton(root, '详情')
+      const text = visibleTextOf(tree)
+      if (!/MB\/s/.test(text)) throw new Error(`the rate should be shown, got: ${text.slice(0, 300)}`)
+      if (!text.includes('剩余')) throw new Error(`the ETA should be shown, got: ${text.slice(0, 300)}`)
+      if (!text.includes('/ 86.4 MB')) throw new Error(`transferred and total should be shown, got: ${text.slice(0, 300)}`)
+    })
+
+    await harness.check('a managed installer job invents no rate', async () => {
+      // The same row without those fields must stay silent about speed rather than print 0 B/s.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { mode: 'winget', status: 'running', phase: 'download', percent: 42 },
+      })
+      clickButton(root, '详情')
+      const text = visibleTextOf(tree)
+      if (/MB\/s|KB\/s/.test(text)) throw new Error(`no rate should be claimed, got: ${text.slice(0, 300)}`)
+      if (text.includes('剩余')) throw new Error(`no ETA should be claimed, got: ${text.slice(0, 300)}`)
+    })
+
+    // ------------------------------------------------------------ extra folders    // The "already installed? pick its folder" feature. Two halves matter: which rows offer the
     // picker at all, and what the user is told after choosing.
 
     const PICK_LABEL = '📁 已经安装？选择对应文件夹'
