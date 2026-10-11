@@ -211,8 +211,10 @@ window.__ModuleLoader__.load({
 .dsh-de-learn:hover{opacity:.75}
 .dsh-de-rowbusy{font-size:11px;color:var(--dsw-alias-brand-primary);flex:none;display:inline-flex;align-items:center;gap:5px}
 .dsh-de-progress{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-bar{position:relative;flex:1;min-width:80px;height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.dsh-de-bar{position:relative;flex:1;min-width:130px;height:14px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;border:1px solid var(--dsw-alias-border-l1)}
 .dsh-de-barfill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .3s ease}
+/* 百分比叠在槽内：进度由「条」本身表达，旁边的数字只是补充 */
+.dsh-de-barlabel{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1;color:var(--dsw-alias-label-primary);pointer-events:none}
 .dsh-de-bar[data-indeterminate="1"] .dsh-de-barfill{width:35%;animation:dsh-de-slide 1.1s ease-in-out infinite}
 @keyframes dsh-de-slide{0%{transform:translateX(-100%)}100%{transform:translateX(285%)}}
 .dsh-de-activity{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -744,8 +746,10 @@ window.__ModuleLoader__.load({
                           className: 'dsh-de-barfill',
                           style: progress.indeterminate ? undefined : { width: `${progress.percent}%` },
                         }),
+                        progress.indeterminate
+                          ? null
+                          : h('span', { className: 'dsh-de-barlabel' }, `${progress.percent}%`),
                       ),
-                      progress.indeterminate ? null : h('span', { className: 'dsh-de-badge' }, `${progress.percent}%`),
                       job.size ? h('span', { className: 'dsh-de-badge' }, job.size) : null,
                     ),
                     // 详情：下载/安装进度、当前活动行、完整日志都在这里。
