@@ -29,6 +29,7 @@ import {
   startDownload,
 } from '../downloads.js'
 import {
+  availableDrives,
   expandEnv,
   expandGlob,
   globSegmentToRegExp,
@@ -240,13 +241,22 @@ check('expandEnv drops candidates with an unset variable', () => {
   assert(expandEnv('%NOPE_NOT_SET%\\x').length === 0, 'expected []')
 })
 
-check('%DRIVES% expands to the system drive plus existing data drives', () => {
+check('%DRIVES% expands to the system drive, then the data drives that exist', () => {
   const system = (process.env.SystemDrive || 'C:').replace(/[\\/]+$/, '')
-  const [first] = expandEnv('%DRIVES%\\x', {}, () => false)
+  // Strict probe: only the system drive counts as existing, so exactly one candidate is right on any
+  // machine — a single-drive box included.
+  const [first, ...rest] = expandEnv('%DRIVES%\\x', {}, () => false)
   assert(first === `${system}\\x`, `expected the system drive first, got ${first}`)
-  const several = expandEnv('%DRIVES%\\x', {}, () => true)
-  assert(several.length >= 2, `expected several drives with a permissive probe, got ${several.length}`)
-  assert(several.every((candidate) => /^[A-Z]:\\x$/.test(candidate)), `bad candidates: ${several.join(', ')}`)
+  assert(rest.length === 0, `a strict probe should yield one drive, got ${JSON.stringify(rest)}`)
+
+  // Permissive probe: the candidate count must match the drive list the resolver itself reports,
+  // rather than assuming this machine has a D:. Asserting ">= 2" passes on a two-drive developer box
+  // and fails on a single-drive CI runner — the machine deciding the result instead of the code.
+  const many = expandEnv('%DRIVES%\\x', {}, () => true)
+  assert(many.length === availableDrives(() => true).length,
+    `expected ${availableDrives(() => true).length} drives, got ${many.length}`)
+  assert(many[0] === `${system}\\x`, `the system drive must still come first, got ${many[0]}`)
+  assert(many.every((candidate) => /^[A-Z]:\\x$/.test(candidate)), `bad candidates: ${many.join(', ')}`)
 })
 
 check('%DRIVES% works inside a longer path', () => {
@@ -372,6 +382,13 @@ console.log('\npicked folders')
  * `<root>\<tool-folder-pattern>` — so the advertised pick expanded to
  * `…\apache-jmeter-5.6.3\apache-jmeter-*`, which exists nowhere, and the feature silently did
  * nothing. These checks build a throwaway JMeter-shaped folder and assert both pick levels work.
+ *
+ * The probe is the real jmeter entry **with its candidates narrowed to the picker's own**, and that
+ * narrowing is the point rather than a convenience: `probeItem` walks every candidate in order, so
+ * running it against the full entry would let this machine's own JMeter — wherever it happens to
+ * live — satisfy the scan first, and the guard would then be measuring the machine instead of the
+ * code. It passed and failed that way during development. The picker's candidate is still taken from
+ * the shipped catalog, so the shape being tested cannot drift away from what ships.
  */
 check('a picked root makes the scan find the tool, whichever level was picked', async () => {
   const base = path.join(os.tmpdir(), `dsh-dev-env-pick-${process.pid}`)
@@ -381,10 +398,12 @@ check('a picked root makes the scan find the tool, whichever level was picked', 
     const entry = CATALOG.find((row) => row.id === 'jmeter')
     assert(entry, 'the catalog needs a jmeter entry for this guard')
 
-    const state = { roots: [] }
     // The candidate the catalog actually uses for a user-supplied root.
     const candidate = entry.probe.paths.find((value) => mentionsRoots(value))
     assert(candidate, 'the jmeter entry should have a %DSH_DEV_ENV_ROOTS% candidate')
+
+    const pit = { ...entry, probe: { ...entry.probe, paths: [candidate] } }
+    const state = { roots: [] }
 
     for (const picked of [toolDir, base]) {
       // Expansion #1: the user's root is substituted in.
@@ -398,9 +417,8 @@ check('a picked root makes the scan find the tool, whichever level was picked', 
       assert(matches.includes(toolDir),
         `picking ${path.basename(picked)} should reach ${toolDir}, got ${JSON.stringify(matches)}`)
 
-      // And the scanner's own probe must agree, through the same code path a scan uses. The root is
-      // handed over explicitly so the guard cannot depend on this machine's own picked folders.
-      const result = await __test.probeItem(entry, state, { roots: [picked] })
+      // And the scanner's own probe must agree, through the same code path a scan uses.
+      const result = await __test.probeItem(pit, state, { roots: [picked] })
       assert(result.installed === true, `probe should report installed for ${picked}, got ${JSON.stringify(result)}`)
       assert(result.version === '9.9.9', `version should come from the folder name, got ${result.version}`)
       assert(result.where === toolDir, `where should be the tool dir, got ${result.where}`)
