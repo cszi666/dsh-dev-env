@@ -258,6 +258,34 @@ Two things deliberately **do not** change: the HTTP route prefix `/dsh-dev-env/a
 the tools both hardcode it, and there is no reason for it to track the package scope) and the GitHub
 repository name.
 
+#### If your own install is a `link:` — do not follow the upgrade prompt
+
+The upgrade instructions in the README are written for someone who installed a published version, and
+their step 2 is `remove_bundle`. **A local development install must not do that**: removing the bundle
+throws away the `link:` and with it the property that makes development possible — the working tree
+being what DSH loads.
+
+A `link:` install declares both a dependency and a bundle row, so renaming means editing the profile's
+own `package.json` (not this repository) and restarting DSH:
+
+```jsonc
+// ~/.dsh/profiles/<profile>/package.json
+"dependencies": {
+  "dsh-dev-env": "link:C:/path/to/plugins/dsh-dev-env"   // was "@cszi666/dsh-dev-env"
+},
+"dsh": {
+  "profile": {
+    "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-dev-env"]
+  }
+}
+```
+
+Then restart DSH and confirm with `plugin_manager` `list_bundles` that the row now reads
+`dsh-dev-env`, and that `node_modules` contains a junction for the new name (the stale one for the old
+name is harmless but can be deleted). Leaving the old scoped entry in place also works — both names
+can point at the same directory — but then the bundle row keeps the old name, which is confusing when
+you are trying to verify a rename.
+
 Lesson worth keeping: **never unpublish a whole package to tidy up.** Use `npm stage reject <stage-id>`
 for a staged entry, or `npm deprecate` for a released version. Both are reversible; a whole-package
 unpublish is not.

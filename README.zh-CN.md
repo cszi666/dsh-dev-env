@@ -124,17 +124,22 @@ dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to
 在会话里粘贴：
 
 ```
-我已经装过旧版的 dsh-dev-env，现在要升级到 1.1.2。
+我已经装过旧版的 @cszi666/dsh-dev-env，现在要升级到 dsh-dev-env@1.1.2。
 
 请按顺序执行，不要跳步：
-1. 先用 plugin_manager 的 list_bundles 告诉我当前装的是哪个版本。
-2. 用 remove_bundle 先把它卸载掉。不要直接覆盖安装：DSH 会保留旧 bundle 行，
+1. 先用 plugin_manager 的 list_bundles 告诉我当前装的**包名**和版本。
+2. 用 remove_bundle 先卸载旧的那个。不要直接覆盖安装：DSH 会保留旧 bundle 行，
    新一代加载失败时报 "1 entry did not activate dev-env: failed to import"，
    那看起来像整个应用坏了。
 3. 用 install_bundle 安装 dsh-dev-env@1.1.2——版本写死，便于核对。
-4. 再用 list_bundles 确认装上的就是 1.1.2，并报告 application 状态。
+4. 再用 list_bundles 确认装上的就是 dsh-dev-env@1.1.2，并报告 application 状态。
 5. 如果有 restart-required 就告诉我，不要自己重启客户端。
 ```
+
+**1.1.2 改了包名**，所以这不只是升版本，也是换名字：npm 包原本是 `@cszi666/dsh-dev-env`，现在是不带
+scope 的 `dsh-dev-env`。旧名字对**在它名下发布过的版本**（到 1.1.1 为止）仍然有效，这也是为什么第 1 步
+要问包名而不只是版本、第 4 步要同时核对两者。如果你的旧名是用本地 `link:` 装的，**不要用第 2 步**——
+见 [包名](docs/RELEASING.md#package-name) 里的 link 情形。
 
 第 4 步不是走过场：**"有这一行"不等于"插件激活了"**。同样的流程手动做也可以——
 在**设置 → 插件**里卸载，再添加写死版本的 spec。
@@ -150,8 +155,10 @@ dsh plugin --profile <profile> add dsh-dev-env
 `@scope/name`、`github:owner/repo`、`https://github.com/owner/repo`、`.tgz` 链接、版本范围都行。`<profile>`
 填你在用的那个 profile——**不能填 `desktop`**，它归 Electron 应用所有。
 
-npm 包目前挂在 `@cszi666` scope 下。等 npm 对 `dsh-dev-env` 这个未加 scope 的名字的取消发布冷却期结束后，
-计划发一个同名的不带 scope 版本；真到那时只有这个 spec 会变，GitHub spec 和仓库名都不受影响。
+npm 包现在是不带 scope 的 **`dsh-dev-env`**。1.0.0 到 1.1.1 期间它曾叫 `@cszi666/dsh-dev-env`，原因是
+`dsh-dev-env` 这个名字当时还在 npm 的取消发布冷却期里；1.1.2 改回来了。旧名字对**在它名下发布过的版本**
+仍然有效，所以已装的副本照常能用，但新安装请用上面那个不带 scope 的 spec。变的只有 npm spec——
+GitHub spec 和仓库名从来没变过。
 
 对 GitHub 仓库，DSH 会先用 `git ls-remote` 确认可达性，所以账号或仓库名打错会立刻失败，而不是装到一半才报错。
 

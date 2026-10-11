@@ -144,17 +144,23 @@ which reads as a broken application rather than a broken plugin. `1.1.0` shipped
 the order below matters. Paste this into a session:
 
 ```
-I already have an older dsh-dev-env installed. Upgrade it to 1.1.2.
+I have an older @cszi666/dsh-dev-env installed and I want dsh-dev-env@1.1.2.
 
 Do this in order, without skipping steps:
-1. Use plugin_manager list_bundles to tell me which version is installed right now.
+1. Use plugin_manager list_bundles to tell me which name and version is installed right now.
 2. remove_bundle it first. Do not install over it: DSH keeps the old bundle row, and if the new one
    fails to load it reports "1 entry did not activate dev-env: failed to import", which looks like
    the whole application is broken.
 3. install_bundle dsh-dev-env@1.1.2 — pinned, so the result can be checked.
-4. list_bundles again and confirm it is 1.1.2, then report the application status.
+4. list_bundles again and confirm it shows dsh-dev-env at 1.1.2, then report the application status.
 5. If it is restart-required, tell me; do not restart the client yourself.
 ```
+
+**1.1.2 renamed the package**, so this is a change of name and not only of version: the npm package
+used to be `@cszi666/dsh-dev-env` and is now the unscoped `dsh-dev-env`. The old name still resolves
+for the versions published under it (up to 1.1.1), which is why step 1 asks for the name as well as
+the version, and why step 4 checks both. If you installed the old name as a local `link:`, do not use
+step 2 — see [Package name](docs/RELEASING.md#package-name) for the link case.
 
 Step 4 is not ceremony: a bundle row existing is not the same as a plugin having activated. The same
 sequence works by hand — uninstall in **Settings → Plugins**, then add the pinned spec.
@@ -171,9 +177,11 @@ dsh plugin --profile <profile> add dsh-dev-env
 `<profile>` is whichever profile you run — it **cannot be `desktop`**, which belongs to the Electron
 app.
 
-The npm package currently lives under the `@cszi666` scope. An unscoped `dsh-dev-env` release is planned
-once npm's post-unpublish cooldown on that name expires; if that happens, only this spec changes — the
-GitHub spec and the repository name stay the same.
+The npm package is the unscoped **`dsh-dev-env`**. It was scoped as `@cszi666/dsh-dev-env` from 1.0.0
+to 1.1.1 because the unscoped name was inside npm's post-unpublish cooldown; 1.1.2 moved back. The old
+name still resolves for the versions published under it, so an existing install keeps working, but new
+installs should use the unscoped spec above. Only the npm spec was affected — the GitHub spec and the
+repository name never changed.
 
 For a GitHub repo DSH checks reachability with `git ls-remote` before installing, so a typo in the
 account or repository name fails immediately instead of half-way through.
