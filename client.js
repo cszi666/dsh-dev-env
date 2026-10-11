@@ -159,7 +159,7 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .dsh-de-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}
-.dsh-de-scroll{flex:1;min-height:0;overflow:auto;padding:0 20px 28px}
+.dsh-de-scroll{flex:1;min-height:0;overflow:auto;padding:0 20px 28px;display:flex;flex-direction:column}
 .dsh-de-head{padding:18px 20px 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .dsh-de-headrow{display:flex;align-items:flex-start;gap:12px}
 .dsh-de-title{margin:0;font-size:16px;font-weight:600;line-height:22px}
@@ -195,7 +195,10 @@ window.__ModuleLoader__.load({
 .dsh-de-cmd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-radius:4px;padding:2px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
 .dsh-de-actions{display:flex;gap:6px;flex:none}
 .dsh-de-note{margin:-2px 0 10px 12px;font-size:11px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-jobs{margin-top:20px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:12px}
+/* 任务区在 DOM 里仍是最后一个子元素，用 flex order 提到最前。
+   用户最想先看到的是「正在发生什么」，而它原本被压在 82 行的目录列表底下，得滚到底才看得见。
+   这样不改渲染结构，也就不必去动那段容易写错的 JSX。 */
+.dsh-de-jobs{order:-1;margin:14px 0 22px;border-bottom:1px solid var(--dsw-alias-border-l1);padding-bottom:12px}
 .dsh-de-job{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
 .dsh-de-jobhead{display:flex;align-items:center;gap:8px;font-size:12px}
 .dsh-de-state{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1)}
