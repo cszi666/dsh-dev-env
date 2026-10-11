@@ -5,20 +5,26 @@ memory of the previous one can continue without re-deriving anything.
 
 ## Where things stand
 
-- **npm**: `@cszi666/dsh-dev-env@1.1.1` is live. `1.1.0` is **broken** — its tarball was missing
-  `describe.js`, so it could not activate. `1.0.0` works but predates everything below.
+- **npm**: `@cszi666/dsh-dev-env@1.1.1` is the newest published version. `1.1.0` is **broken** — its
+  tarball was missing `describe.js`, so it could not activate. `1.0.0` works but predates everything
+  below. **1.1.2 is prepared in the tree but not published**: it renames the package back to the
+  unscoped `dsh-dev-env`, which is free again (`npm view dsh-dev-env version` → `E404`).
+- **Everything on the list below is implemented and green.** `npm test` runs 71 checks, and the
+  human-only steps that remain are listed in *Known gaps* rather than in *Next*.
 - **The installed plugin is a `link:` to this working tree**, so whatever is in the tree is what DSH
   loads. Client-side changes need a page refresh; Host-side changes need a **DSH restart** (the Host
   module is imported once at startup).
-- `main` is green: `npm test` passes, `prepublishOnly` runs the same checks.
+- **The `link:` still points at the scoped name**, so a DSH restart is needed for this release's
+  routes and download mode to take effect, even before publishing.
 
 ## Decisions already made (do not reopen)
 
-- **The package stays `@cszi666/dsh-dev-env` until the next release.** The unscoped name
-  `dsh-dev-env` is available again (its 24-hour cooldown expired), so the next release renames to it
-  and ships as **1.1.2**. The four places the rename touches are listed in
-  [RELEASING.md](RELEASING.md) under *Package name*.
-- **Nothing is published until the remaining work is done and has been exercised by hand.**
+- **The rename to the unscoped `dsh-dev-env` happened in 1.1.2**, across the four places listed in
+  [RELEASING.md](RELEASING.md) under *Package name*. The HTTP route prefix `/dsh-dev-env/api/*`
+  deliberately did not move with it, nor did the repository name.
+- **Nothing is published until the work is done and has been exercised by hand.** The publish itself is
+  a human step: `npm test`, `npm pack --dry-run`, then `npm publish` (or a `v1.1.2` tag for the
+  workflow).
 - **Features that need several round trips are deliberately last**, after the single-shot ones are
   stable. That means `dev_env_add_root` and the "let DSH find the folder" hand-off come after the
   plain folder picker works.
@@ -238,11 +244,33 @@ Two things about verifying this are worth keeping:
 `adb` (7.7 MB, `dl.google.com`) and `junit` (2.7 MB, Maven Central) resolve the same way and are the
 obvious next two entries; the census above has their verified URLs.
 
-### 7. Release 1.1.2
+### 7. Release 1.1.2 — **prepared, awaiting the human publish**
 
 Rename to `dsh-dev-env`, update `CHANGELOG.md` / `SECURITY.md` / `RELEASING.md`, run `npm pack
 --dry-run` and read the file list, then publish. The unpublish cooldown for the unscoped name has
 already expired.
+
+All of that is done in the tree:
+
+- renamed in the four places, with `/dsh-dev-env/api/*` deliberately unchanged;
+- `package.json` at `1.1.2`, `CHANGELOG.md` has a dated `[1.1.2]` section and its link, `SECURITY.md`
+  says 1.1.2, `RELEASING.md` records the rename as done and tracks `v1.1.2`;
+- `npm test` green (71 checks), `npm pack --dry-run` **20 files** — every module the code imports is
+  in the tarball, including `roots.js` and `downloads.js`;
+- `npm view dsh-dev-env version` → `E404`, so the name is free.
+
+**What is left is only the publish**, which is a human step because it needs the npm session/2FA (and
+because a published version number can never be reused — see the unpublish lesson in RELEASING.md):
+
+```powershell
+npm test
+npm pack --dry-run          # read the list
+npm publish --access public # or: git tag v1.1.2 && git push origin v1.1.2
+```
+
+One note for the machine this was developed on: `npm` needs a writable cache, and outside the sandbox
+the default is fine. Inside it, `npm_config_cache` had to point somewhere writable, and `npm view` /
+`npm pack` failed with `EPERM` until it did.
 
 ## Known gaps and unverified paths
 

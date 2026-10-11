@@ -6,9 +6,8 @@ Maintainer checklist, in order. Everything here has been done once on the refere
 ## 0. Prerequisites
 
 - A GitHub account that will own the repository.
-- An npm account, if you also want the npm install path. **This package is currently published as
-  `@cszi666/dsh-dev-env`**; see [Package name](#package-name) for why, and for the move back to an
-  unscoped name.
+- An npm account, if you also want the npm install path. **The package is published as the unscoped
+  `dsh-dev-env`**; see [Package name](#package-name) for the scoped history.
 - Git on `PATH`. (`winget install --id Git.Git` — the panel can do this for you.)
 - A way to run a plugin install. The `dsh plugin ...` commands on this page need the `dsh` CLI
   (`@deepseek-ai/dsh`, which exposes `bin: { dsh: lib/bin.js }`). The **desktop build bundles it
@@ -133,21 +132,23 @@ on a missing secret. Create an npm automation token, then store it as the reposi
 (Settings → Secrets and variables → Actions → New repository secret), and only then:
 
 ```powershell
-git tag v1.1.1
-git push origin v1.1.1
+git tag v1.1.2
+git push origin v1.1.2
 ```
 
 That publishes the package through `.github/workflows/release.yml`, and gives the link at the bottom of
-`CHANGELOG.md` (`releases/tag/v1.1.1`) something to resolve to.
+`CHANGELOG.md` (`releases/tag/v1.1.2`) something to resolve to.
 
 Prefer publishing by hand? Run `npm publish --access public` first and push the tag afterwards. The
 workflow refuses to publish a version that is already on the registry, so the tag run becomes a no-op —
 but without `NPM_TOKEN` it still reports red, so create the secret either way.
 
-**State as of 1.1.1:** `@cszi666/dsh-dev-env@1.0.0` and `1.1.0` are on npm, but **1.1.0 is broken** —
-its tarball was missing `describe.js`, so it cannot activate. 1.1.1 is the first usable 1.1.x. Both
-install paths work, and the npm one is the only one a clean machine can use (see
-[Package name](#package-name)).
+**State as of 1.1.2:** the package is published as the unscoped **`dsh-dev-env`** again — the scope is
+gone, because the name's unpublish cooldown expired and the rename finally happened (see
+[Package name](#package-name)). History: `@cszi666/dsh-dev-env@1.0.0` and `1.1.0` are on npm, but
+**1.1.0 is broken** — its tarball was missing `describe.js`, so it cannot activate. 1.1.1 is the first
+usable 1.1.x, and it is the last release under the scope. Both install paths work, and the npm one is
+the only one a clean machine can use.
 
 ### Expect a browser step
 
@@ -189,7 +190,7 @@ git push --follow-tags
 npm publish --access public
 ```
 
-Users pick it up with `dsh plugin --profile <profile> add @cszi666/dsh-dev-env@<version>` or by
+Users pick it up with `dsh plugin --profile <profile> add dsh-dev-env@<version>` or by
 reinstalling the bundle. Remember that anyone running a plugin from a git spec receives the new commit
 only when they reinstall it.
 
@@ -204,10 +205,10 @@ So the sequence for a machine that already has an older version:
 
 1. **Uninstall first**, so the broken generation is gone rather than racing the new one:
    `plugin_manager` with `action: remove_bundle`, or **Settings → Plugins → uninstall**.
-   In a CLI-managed profile, `dsh plugin --profile <profile> remove @cszi666/dsh-dev-env`.
-2. **Install the new version by its exact spec** — `@cszi666/dsh-dev-env@1.1.1`, not the bare name.
+   In a CLI-managed profile, `dsh plugin --profile <profile> remove dsh-dev-env`.
+2. **Install the new version by its exact spec** — `dsh-dev-env@1.1.2`, not the bare name.
    Pinning makes the result checkable; the bare name leaves you guessing which generation is live.
-3. **Confirm what actually loaded** before trusting it: `npm view @cszi666/dsh-dev-env dist-tags`
+3. **Confirm what actually loaded** before trusting it: `npm view dsh-dev-env dist-tags`
    must show the version you intended, and `plugin_manager` `list_bundles` must show the same one. A
    row that exists is not the same as a plugin that activated.
 4. **Restart DSH** if the panel seems stale. The Host half is imported once at startup, so a changed
@@ -223,8 +224,10 @@ npm pack --dry-run           # read the file list; it is the truth about what us
 
 ## Package name
 
-The package is published under the `@cszi666` scope because the unscoped name is temporarily
-unavailable. Timeline:
+The package is published as the unscoped **`dsh-dev-env`**. It was briefly scoped as
+`@cszi666/dsh-dev-env` (1.0.0 through 1.1.1) because the unscoped name was inside npm's unpublish
+cooldown; this is the history of that period, kept because the reason the scope existed decides how the
+rename was done. Timeline:
 
 - `dsh-dev-env@1.0.0` was published on 2026-10-10T03:47Z and entered npm's staged-publishing queue.
 - The whole package was unpublished at **2026-10-10T05:04:46Z** (the staged placeholder was cleaned up
@@ -246,9 +249,14 @@ could ship the same day.
 | `client.js` | the `id` in `window.__ModuleLoader__.load`, which must equal the package name |
 | `README.md`, `README.zh-CN.md` | the documented install specs |
 
+**Done in 1.1.2.** The cooldown expired at 2026-10-11T05:04:46Z, `npm view dsh-dev-env version` returned
+`E404` (the name was free), and the four places above moved in one commit. Nothing else needed to
+change: the repository was already `cszi666/dsh-dev-env`, so the `github:cszi666/dsh-dev-env` spec and
+the `homepage` / `repository` URLs were correct throughout the scoped period.
+
 Two things deliberately **do not** change: the HTTP route prefix `/dsh-dev-env/api/*` (the panel and
 the tools both hardcode it, and there is no reason for it to track the package scope) and the GitHub
-repository name (the `github:cszi666/dsh-dev-env` spec keeps working).
+repository name.
 
 Lesson worth keeping: **never unpublish a whole package to tidy up.** Use `npm stage reject <stage-id>`
 for a staged entry, or `npm deprecate` for a released version. Both are reversible; a whole-package

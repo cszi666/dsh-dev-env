@@ -11,7 +11,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: '@cszi666/dsh-dev-env',
+  id: 'dsh-dev-env',
   factory(require) {
     const React = require('react')
     const h = React.createElement

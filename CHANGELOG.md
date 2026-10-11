@@ -7,73 +7,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-11
+
+**The panel can now do the three things 1.1.1 could not: stop a stalled install, point the scanner at
+a tool it cannot guess, and show a real transfer rate.** The package also moves back to the unscoped
+name `dsh-dev-env` (see *Changed*).
+
 ### Added
 
+- **A Cancel button on every running job.** The host route `POST /dsh-dev-env/api/jobs/cancel`
+  existed and killed the whole process tree with `taskkill /T /F`, but nothing in the panel ever
+  called it, so a slow `winget install` — JMeter's Apache mirror waiting on an unreachable host — could
+  not be stopped from the UI at all. The button sits on the job's own row, locks itself and reads
+  `取消中…` while the request is in flight, and the row ends as `cancelled`. The detail view then names
+  the cleanup boundary the host recorded (`partial-removed` vs `external-cache-untouched`), because a
+  cancelled `winget` install cannot have its cache deleted and a clean-looking "cancelled" must not
+  imply a clean sweep.
 - **Download a tool ourselves, with a real speed, ETA and resume.** `downloads.js` was written and
-  verified but nothing imported it, so it was inert. It is now wired for `jmeter`, the entry whose
-  install stalled in the first place. A managed installer (`winget` / `pip` / `npm`) reports no size
-  and no rate when its output is piped and offers no resume, so "progress like a browser" is only
-  possible for a file we fetch ourselves: the job now carries `receivedBytes`, `totalBytes`,
-  `bytesPerSecond` and `etaSeconds`, and the panel shows the rate and the remaining time. Cancelling
-  interrupts the transfer and deletes the `.part` file and its metadata, so the cancel route's
-  `partial-removed` branch finally has something to clean.
+  verified but nothing imported it, so it was inert. A managed installer reports no size and no rate
+  when its output is piped and offers no resume, so progress like a browser's is only possible for a
+  file we fetch ourselves: the job now carries `receivedBytes`, `totalBytes`, `bytesPerSecond` and
+  `etaSeconds`, and the panel shows the rate and the remaining time. Cancelling interrupts the
+  transfer and deletes the `.part` file and its metadata, which is what finally gives the cancel
+  route's `partial-removed` branch something to clean.
 - **Download URLs are discovered, not pinned.** Apache's mirror keeps only the current release and its
   filename carries the version, so a hardcoded URL starts rotting at the next release — silently, since
   a 404 looks exactly like an unreachable network. `install.download` therefore describes *where to
   look*; `resolveDownload()` reads the listing, takes the numerically newest match (`compareVersions`,
-  so 5.10 beats 5.9), verifies it with the same probe a resume uses, and falls back to the archive only
-  if the mirror yields nothing.
-- **Point the scanner at a tool it cannot guess: extra roots, without restarting DSH.** Some tools
-  are unzipped into a folder of the user's own — the registry has never heard of them and `PATH` does
-  not contain them, so no fixed candidate list can find them. The escape hatch used to be the
-  `DSH_DEV_ENV_ROOTS` environment variable, which needs `setx` **and a DSH restart**. The panel can
-  now add a folder itself: `GET` / `POST` / `DELETE /dsh-dev-env/api/roots` remember it in the
-  profile's `dsh-dev-env/roots.json` (`DSH_DEV_ENV_ROOTS_FILE` overrides the location) and merge it
-  with the environment variable on the next scan. Adding or removing a root invalidates the scan
-  cache, so the inventory reflects it immediately. `hint` is exposed per catalog entry — the sentence
-  that says what a given tool needs to be recognised — and is `null` for `registry` / `argv` entries,
-  where choosing a folder would achieve nothing.
-- **A folder pick for a tool works whether the user picks the tool's own directory or its parent.**
-  The catalog writes candidates as `<root>\<tool-folder-pattern>`, so picking the tool folder
-  appended the pattern to an already-complete path (`…\apache-jmeter-5.6.3\apache-jmeter-*`, which
-  exists nowhere) and the pick silently looked broken. The probe now also tries the directory above
-  when the last path segment is the tool folder itself. Verified against a real JMeter install:
-  after `POST /api/roots` the very next scan reports `installed: true, version: 5.6.3`.
+  so 5.10 beats 5.9 where text order would pick 5.9), verifies it with the same probe a resume uses,
+  and falls back to the archive only if the mirror yields nothing.
+- **Point the scanner at a tool it cannot guess: extra roots, without restarting DSH.** Some tools are
+  unzipped into a folder of the user's own — the registry has never heard of them and `PATH` does not
+  contain them, so no fixed candidate list can find them. The escape hatch used to be the
+  `DSH_DEV_ENV_ROOTS` environment variable, which needs `setx` **and a DSH restart**. The panel can now
+  add a folder itself: `GET` / `POST` / `DELETE /dsh-dev-env/api/roots` remember it in the profile's
+  `dsh-dev-env/roots.json` (`DSH_DEV_ENV_ROOTS_FILE` overrides the location) and merge it with the
+  environment variable on the next scan. Adding or removing a root invalidates the scan cache, so the
+  inventory reflects it immediately. `hint` is exposed per catalog entry — the sentence saying what a
+  given tool needs to be recognised — and is `null` for `registry` / `argv` entries, where choosing a
+  folder would achieve nothing.
 - **“Already installed? Pick its folder” in the panel.** A missing entry that a folder could actually
-  identify now offers the button next to its install action, together with the sentence saying what
-  that tool needs. Picking one calls `uiWorkspace.pickDirectory()`, remembers the folder, and reports
-  straight back whether the tool was recognised there — or what was still missing. The extra folders
-  are listed with a Remove action, so a wrong pick is undoable. The button appears only for
-  `pathList` entries (where a folder can help) and only when the client service is present, so there
-  is never a control that cannot work.
-- **A Cancel button on every running job.** The host route `POST /dsh-dev-env/api/jobs/cancel`
-  existed and killed the whole process tree, but nothing in the panel ever called it, so a slow
-  `winget install` — JMeter's Apache mirror, for instance — could not be stopped from the UI at all.
-  The button now sits on the job's own row, disables itself and reads `取消中…` while the request is
-  in flight, and the row ends as `cancelled`.
-- **The cleanup boundary is shown, not implied.** On cancel the host records whether it removed its
-  own partial files or left an external installer's cache alone; the job detail now says which one
-  applied. A cancelled `winget` install reports that its downloaded cache is not ours to delete
-  rather than letting a clean-looking "cancelled" imply a clean sweep.
-- **Behavioural tests for the panel**, in `scripts/client-cancel.test.mjs`. The self-check has no
-  dependencies by design, so this renders the real `client.js` against a minimal React/DOM shim
-  written for it and clicks the actual buttons: the cancel POST, the in-flight lock, the `cancelled`
-  row and its cleanup text, which rows offer a folder picker and which must not, the post-pick
-  verdict, a cancelled pick writing nothing, and the remove action. A companion shape check fails if
-  either half of the cancel wiring is removed.
-- **Self-check coverage for picked folders**, against real temporary `apache-jmeter-9.9.9`-shaped
-  folders: both pick levels reach the tool, a failed pick names the condition that failed, and a
-  probe that reads a version out of a file genuinely needs the level above it. That last guard is
-  written against a local fixture probe rather than a catalog entry, so it cannot rot with the
-  catalog, and each was verified by mutating the code into failing.
+  identify now offers the button next to its install action, together with what that tool needs.
+  Picking one calls `uiWorkspace.pickDirectory()`, remembers the folder, and reports straight back
+  whether the tool was recognised there — or what was still missing. The extra folders are listed with
+  a Remove action, so a wrong pick is undoable. The button appears only for `pathList` entries (where a
+  folder can help) and only when the client service is present, so there is never a control that
+  cannot work.
 
 ### Changed
 
-- **A finished job no longer animates as if it were still working.** The indeterminate progress bar
-  is only drawn while a job is running; cancelled and failed jobs show a stopped bar instead of a
-  sliding one.
-- **`roots.js` is now wired up**, so the self-check's import guard demands it in `files[]`. That
-  guard is the one whose absence shipped 1.1.0 without `describe.js`.
+- **The package is `dsh-dev-env` again, not `@cszi666/dsh-dev-env`.** The unscoped name came off npm's
+  unpublish cooldown, so the scope is gone: `package.json` `name`, the `cordis.patch.yml` row,
+  `client.js`'s `__ModuleLoader__.load` id, and the documented install specs all move together. The
+  HTTP route prefix `/dsh-dev-env/api/*` deliberately does **not** change — the panel and the tools
+  hardcode it, and it never had anything to do with the package scope.
+- **A finished job no longer animates as if it were still working.** The indeterminate progress bar is
+  only drawn while a job is running; cancelled and failed jobs show a stopped bar instead of a sliding
+  one.
+
+### Fixed
+
+- **Picking a tool's own folder matched nothing.** Candidates are written as
+  `<root>\<tool-folder-pattern>`, so choosing `…\apache-jmeter-5.6.3` — exactly what the panel's own
+  hint tells the user to do — expanded to `…\apache-jmeter-5.6.3\apache-jmeter-*`, a path that exists
+  nowhere, and the pick silently did nothing. The probe now also tries the level above when the last
+  path segment is the tool folder itself, so either pick works.
+- **A bare drive root was stored as a root.** `normaliseDir('D:\')` stripped to `'D:'` and was written
+  to the store, contradicting the comment that claimed it was rejected. It now returns `null`.
+- **`roots.js` and `downloads.js` are wired up**, so the self-check's import guard demands them in
+  `files[]`. That guard fired for both during this release, exactly as designed — it is the one whose
+  absence shipped 1.1.0 without `describe.js`.
+
+### Tests
+
+- **Behavioural tests for the panel**, in `scripts/client-cancel.test.mjs`. The self-check has no
+  dependencies by design — that is the one thing guarding a release — so this renders the real
+  `client.js` against a minimal React/DOM shim written for it and clicks the actual buttons: the cancel
+  POST, the in-flight lock, the `cancelled` row and its cleanup text, which rows offer a folder picker
+  and which must not, the post-pick verdict, a cancelled pick writing nothing, the remove action, and
+  that only a job we downloaded ourselves claims a rate.
+- **Self-check coverage for picked folders**, against real temporary `apache-jmeter-9.9.9`-shaped
+  folders: both pick levels reach the tool, a failed pick names the condition that failed, and a probe
+  that reads a version out of a file genuinely needs the level above it. The last one is written
+  against a local fixture probe rather than a catalog entry, so it cannot rot with the catalog.
+- **The transfer maths and the cancel cleanup are covered without a network**: a chunked transfer
+  through `startDownload` with a time-stamped meter, asserting the rate and ETA are the numbers the
+  bytes imply, and a cancelled in-flight transfer leaving no `.part` or metadata behind. Every guard in
+  this release was verified by mutating the code into failing.
 
 ## [1.1.1] - 2026-10-10
 
@@ -231,6 +251,7 @@ it, and are recorded because they describe behaviour a user would otherwise hit.
 - No runtime dependencies, and no `peerDependencies` on purpose, so DSH's pre-install
   version-compatibility gate cannot block the plugin.
 
+[1.1.2]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.2
 [1.1.1]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.1
 [1.1.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.0
 [1.0.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.0.0

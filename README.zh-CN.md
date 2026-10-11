@@ -82,7 +82,7 @@ DSH Web 界面里的一个全局面板：`sidebar.panellist` 中 id 为 `dev-env
 **npm —— 零前置依赖。** 不需要 `git`、不需要 Node，什么都不用先装：
 
 ```
-@cszi666/dsh-dev-env
+dsh-dev-env
 ```
 
 **GitHub —— 跟随默认分支**，但需要本机有 `git`：DSH 会先用 `git ls-remote` 校验仓库，pnpm 也走 git 拉取。
@@ -90,6 +90,9 @@ DSH Web 界面里的一个全局面板：`sidebar.panellist` 中 id 为 `dev-env
 ```
 github:cszi666/dsh-dev-env
 ```
+
+> 1.1.2 之前 npm 包名带 scope（`@cszi666/dsh-dev-env`）。旧版本仍可用那个名字安装，
+> 但新安装请用不带 scope 的这个。
 
 ### 在 DSH 桌面版里（不需要 CLI）
 
@@ -99,7 +102,7 @@ github:cszi666/dsh-dev-env
 - **直接吩咐 Agent。** 在任意会话里粘贴：
 
   ```
-  安装 DSH 插件 @cszi666/dsh-dev-env
+  安装 DSH 插件 dsh-dev-env
   ```
 
   Agent 会用 `plugin_manager` 发起 `action: install_bundle`、`target` 填这个 spec，并应用到当前 profile。
@@ -121,15 +124,15 @@ dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to
 在会话里粘贴：
 
 ```
-我已经装过旧版的 @cszi666/dsh-dev-env，现在要升级到 1.1.1。
+我已经装过旧版的 dsh-dev-env，现在要升级到 1.1.2。
 
 请按顺序执行，不要跳步：
 1. 先用 plugin_manager 的 list_bundles 告诉我当前装的是哪个版本。
 2. 用 remove_bundle 先把它卸载掉。不要直接覆盖安装：DSH 会保留旧 bundle 行，
    新一代加载失败时报 "1 entry did not activate dev-env: failed to import"，
    那看起来像整个应用坏了。
-3. 用 install_bundle 安装 @cszi666/dsh-dev-env@1.1.1——版本写死，便于核对。
-4. 再用 list_bundles 确认装上的就是 1.1.1，并报告 application 状态。
+3. 用 install_bundle 安装 dsh-dev-env@1.1.2——版本写死，便于核对。
+4. 再用 list_bundles 确认装上的就是 1.1.2，并报告 application 状态。
 5. 如果有 restart-required 就告诉我，不要自己重启客户端。
 ```
 
@@ -140,7 +143,7 @@ dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to
 
 ```powershell
 npm install -g @deepseek-ai/dsh        # 还没有 CLI 才需要
-dsh plugin --profile <profile> add @cszi666/dsh-dev-env
+dsh plugin --profile <profile> add dsh-dev-env
 ```
 
 `dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，所以任何 pnpm spec 都成立：
