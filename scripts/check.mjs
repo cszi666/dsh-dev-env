@@ -69,6 +69,32 @@ const assert = (condition, message) => {
   if (!condition) throw new Error(message)
 }
 
+/**
+ * Run the whole self-check in a known environment.
+ *
+ * `DSH_DEV_ENV_ROOTS` is a documented user setting — it is how someone points the scanner at a tool
+ * they unzipped themselves — and `expandEnv` merges it with the roots a caller passes. That merge is
+ * the feature. It also means a check that expands `%DSH_DEV_ENV_ROOTS%` sees whatever the person
+ * running `npm test` happens to have set, so the same commit passes on one machine and fails on
+ * another. It did: a real `DSH_DEV_ENV_ROOTS` on one machine made a picked-folder guard resolve the
+ * machine's own JMeter instead of the temp folder the guard had just created.
+ *
+ * Removing the variables here (they are restored at the end) is what makes "the same code gives the
+ * same answer" true for this suite, and it is also the honest thing to assert against: a self-check
+ * must not depend on the machine it runs on.
+ */
+const SANITIZED = ['DSH_DEV_ENV_ROOTS', 'DSH_DEV_ENV_ROOTS_FILE']
+const savedEnv = new Map(SANITIZED.map((name) => [name, process.env[name]]))
+for (const name of SANITIZED) delete process.env[name]
+
+/** Put the environment back exactly as it was, so sourcing this file has no side effects. */
+function restoreEnvironment() {
+  for (const [name, value] of savedEnv) {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
+}
+
 /** One turn of the event loop, for the few checks that have to wait on real file/stream work. */
 const drainOnce = () => new Promise((resolve) => setImmediate(resolve))
 
@@ -926,6 +952,7 @@ await runClientCancelTests({
 })
 
 // ------------------------------------------------------------------ summary
+restoreEnvironment()
 console.log('')
 if (warnings) console.log(`${warnings} warning(s)`)
 if (failures) {
