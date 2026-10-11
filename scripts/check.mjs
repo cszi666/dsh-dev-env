@@ -383,27 +383,31 @@ console.log('\npicked folders')
  * `…\apache-jmeter-5.6.3\apache-jmeter-*`, which exists nowhere, and the feature silently did
  * nothing. These checks build a throwaway JMeter-shaped folder and assert both pick levels work.
  *
- * The probe is the real jmeter entry **with its candidates narrowed to the picker's own**, and that
- * narrowing is the point rather than a convenience: `probeItem` walks every candidate in order, so
- * running it against the full entry would let this machine's own JMeter — wherever it happens to
- * live — satisfy the scan first, and the guard would then be measuring the machine instead of the
- * code. It passed and failed that way during development. The picker's candidate is still taken from
- * the shipped catalog, so the shape being tested cannot drift away from what ships.
+ * The probe here is **written out in full rather than taken from the catalog**, and the catalog is
+ * checked separately for continuing to declare the same candidate. That split is deliberate:
+ * `probeItem` walks every candidate in order, so a probe carrying the real entry's other candidates
+ * lets this machine's own JMeter satisfy the scan before the picker's candidate is ever reached —
+ * the guard then measures the machine. That happened once, and the fix at the time (narrowing the
+ * entry's candidates) still left the guard's behaviour dependent on a catalog entry. Spelling the
+ * probe out removes that dependence entirely.
  */
 check('a picked root makes the scan find the tool, whichever level was picked', async () => {
   const base = path.join(os.tmpdir(), `dsh-dev-env-pick-${process.pid}`)
   const toolDir = path.join(base, 'apache-jmeter-9.9.9')
   mkdirSync(toolDir, { recursive: true })
   try {
+    // The shape under test, self-contained: one candidate, reached only through a picked root.
+    const candidate = '%DSH_DEV_ENV_ROOTS%\\apache-jmeter-*'
+    const probe = { kind: 'pathList', pattern: 'apache-jmeter-([\\d.]+)', paths: [candidate] }
+    const pit = { id: 'fixture-jmeter', name: 'Fixture JMeter', probe }
+    const state = { roots: [] }
+
+    // The catalog must still declare that candidate, or this guard would be testing a shape that no
+    // longer ships — that is what the `picked folders` section's first check is for.
     const entry = CATALOG.find((row) => row.id === 'jmeter')
     assert(entry, 'the catalog needs a jmeter entry for this guard')
-
-    // The candidate the catalog actually uses for a user-supplied root.
-    const candidate = entry.probe.paths.find((value) => mentionsRoots(value))
-    assert(candidate, 'the jmeter entry should have a %DSH_DEV_ENV_ROOTS% candidate')
-
-    const pit = { ...entry, probe: { ...entry.probe, paths: [candidate] } }
-    const state = { roots: [] }
+    assert(entry.probe.paths.some((value) => mentionsRoots(value)),
+      'the jmeter entry must still offer a %DSH_DEV_ENV_ROOTS% candidate for the picker to use')
 
     for (const picked of [toolDir, base]) {
       // Expansion #1: the user's root is substituted in.
@@ -411,7 +415,7 @@ check('a picked root makes the scan find the tool, whichever level was picked', 
       assert(expanded.length === 1, `one candidate expected for ${picked}, got ${JSON.stringify(expanded)}`)
       // Expansion #2: the last segment is a wildcard, expanded against the real filesystem.
       const starts = [expanded[0]]
-      const parent = parentDirStartingPoint(expanded[0], entry.probe)
+      const parent = parentDirStartingPoint(expanded[0], probe)
       if (parent) starts.push(parent)
       const matches = starts.flatMap((start) => expandGlob(start))
       assert(matches.includes(toolDir),
@@ -420,7 +424,9 @@ check('a picked root makes the scan find the tool, whichever level was picked', 
       // And the scanner's own probe must agree, through the same code path a scan uses.
       const result = await __test.probeItem(pit, state, { roots: [picked] })
       assert(result.installed === true, `probe should report installed for ${picked}, got ${JSON.stringify(result)}`)
-      assert(result.version === '9.9.9', `version should come from the folder name, got ${result.version}`)
+      assert(result.version === '9.9.9',
+        `version should come from the folder name, got ${result.version}; where=${result.where}; ` +
+          `candidates=${JSON.stringify(probe.paths)}; picked=${picked}`)
       assert(result.where === toolDir, `where should be the tool dir, got ${result.where}`)
     }
   } finally {
