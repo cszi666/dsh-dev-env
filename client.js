@@ -63,12 +63,27 @@ window.__ModuleLoader__.load({
       detail: '详情',
       close: '收起',
       deleteJob: '删除',
+      cancelJob: '取消',
+      cancelling: '取消中…',
+      phaseCancelled: '已取消',
+      cleanupRemoved: '清理边界：已删除我们自己下载的未完成残片',
+      cleanupExternal: '清理边界：安装器自己的缓存不是我们的，原样留下',
       clearFinished: '清空已结束',
       askDsh: '要讲解吗？',
       explainByDsh: '让 DSH 讲解',
       openOfficial: '打开官网',
       explainSent: '已交给 DSH，去看对话',
       noOfficialPage: '这个工具没有登记官网',
+      pickFolder: '已经安装？选择对应文件夹',
+      pickFolderTitle: '这个工具如果是你自己解压到某个文件夹里的，就选它',
+      picking: '等待选择…',
+      pickedOk: '已记住，并在这里认出了它',
+      rootsTitle: '额外根目录',
+      rootsHint: '有些工具是解压在自己文件夹里的，注册表和 PATH 都找不到。选一次，之后每次扫描都会搜这里。',
+      rootsEmpty: '还没有添加任何目录。',
+      rootsFromEnv: '来自环境变量',
+      rootsFromPick: '手动添加',
+      rootsRemove: '移除',
     }
     const DICT_EN = {
       panel: 'Dev Env',
@@ -112,12 +127,27 @@ window.__ModuleLoader__.load({
       detail: 'Details',
       close: 'Close',
       deleteJob: 'Delete',
+      cancelJob: 'Cancel',
+      cancelling: 'Cancelling…',
+      phaseCancelled: 'Cancelled',
+      cleanupRemoved: 'Cleanup: our own partial files were removed',
+      cleanupExternal: 'Cleanup: the installer cache is not ours and was left alone',
       clearFinished: 'Clear finished',
       askDsh: 'Explain it?',
       explainByDsh: 'Let DSH explain',
       openOfficial: 'Open homepage',
       explainSent: 'Handed to DSH — check the conversation',
       noOfficialPage: 'No homepage recorded for this tool',
+      pickFolder: 'Already installed? Pick its folder',
+      pickFolderTitle: 'Use this if you unzipped the tool into a folder of your own',
+      picking: 'Waiting for the picker…',
+      pickedOk: 'Remembered — and recognised it there',
+      rootsTitle: 'Extra folders',
+      rootsHint: 'Some tools are unzipped into a folder of your own, where the registry and PATH cannot find them. Pick one once and every later scan searches it.',
+      rootsEmpty: 'No folders added yet.',
+      rootsFromEnv: 'from the environment variable',
+      rootsFromPick: 'added by hand',
+      rootsRemove: 'Remove',
     }
 
     // ------------------------------------------------------------ language
@@ -205,6 +235,8 @@ window.__ModuleLoader__.load({
 .dsh-de-state.running{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
 .dsh-de-state.succeeded{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
 .dsh-de-state.failed{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
+/* 取消是用户自己按的，不是出错：用中性灰，也不再有那个"还在跑"的脉冲点。 */
+.dsh-de-state.cancelled{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2)}
 .dsh-de-pre{margin:6px 0 0;max-height:180px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:16px;white-space:pre-wrap;word-break:break-all;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:8px}
 .dsh-de-msg{margin-top:10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .dsh-de-err{margin-top:10px;font-size:12px;color:var(--dsw-alias-state-error-primary);white-space:pre-wrap}
@@ -230,6 +262,14 @@ window.__ModuleLoader__.load({
 .dsh-de-job[data-open="1"]{border-color:var(--dsw-alias-brand-primary)}
 .dsh-de-detail{margin-top:8px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l1)}
 .dsh-de-kv{display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+/* 「已经安装？选择对应文件夹」是次要动作：它排在安装按钮旁边，但不该抢主按钮的注意力。 */
+.dsh-de-pick{margin:-4px 0 10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dsh-de-pickq{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-pickmsg{font-size:11px;color:var(--dsw-alias-state-success-primary)}
+.dsh-de-pickmsg.bad{color:var(--dsw-alias-state-warn-primary)}
+.dsh-de-roots{margin:0 0 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-de-rootrow{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px}
+.dsh-de-rootdir{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;color:var(--dsw-alias-label-primary)}
 `
 
     // ------------------------------------------------------------ helpers
@@ -266,15 +306,28 @@ window.__ModuleLoader__.load({
     /** 安装器只会说中英各半，统一翻译成面板语言。 */
     function phaseText(job, lang) {
       if (job.status === 'succeeded') return t('phaseDone')
+      if (job.status === 'cancelled') return t('phaseCancelled')
       if (job.status === 'failed') return t('phaseInstall')
       const key = job.phase ? `phase${job.phase[0].toUpperCase()}${job.phase.slice(1)}` : 'phaseWaiting'
       return t(key)
+    }
+
+    /**
+     * 任务结束时清理边界的说法。host 在取消时如实记录它删了什么、没删什么，
+     * 这里只负责把那个字段翻成人话——猜一个更好听的结论就等于把边界藏起来。
+     */
+    function cleanupText(job) {
+      if (job.status !== 'cancelled' || !job.cleanup) return null
+      return job.cleanup === 'partial-removed' ? t('cleanupRemoved') : t('cleanupExternal')
     }
 
     /** 进度条：能从输出里读到百分比就画确定进度，否则画不确定进度（诚实，不假装知道）。 */
     function progressOf(job) {
       if (job.status === 'succeeded') return { percent: 100, indeterminate: false }
       if (typeof job.percent === 'number') return { percent: job.percent, indeterminate: false }
+      // 已经停下的任务不该继续画不确定进度——那条滑动的条看起来像"还在下载"。
+      // 要么停在最后一个已知百分比，要么是一条空的确定进度条，即"没有更多进展了"。
+      if (job.status === 'cancelled' || job.status === 'failed') return { percent: 0, indeterminate: false }
       return { percent: 0, indeterminate: true }
     }
 
@@ -285,6 +338,16 @@ window.__ModuleLoader__.load({
         throw new Error((data && data.error) || `HTTP ${response.status}`)
       }
       return data
+    }
+
+    // 「选择一个文件夹」只能由 DSH 打开（浏览器给不了真实的本地路径），而那是 host 的能力，
+    // 所以走客户端服务 uiWorkspace。它是可选服务：拿不到时按钮直接不显示，
+    // 而不是让用户点一个必然报错的按钮。由 apply() 在激活时取一次，之后不再重查——
+    // 服务在插件活着的时候不会消失，反复 ctx.get 只会把"有没有"这个问题拖到渲染期。
+    let pickDirectoryFn = null
+
+    function pickFolder() {
+      return pickDirectoryFn ? pickDirectoryFn() : Promise.resolve(null)
     }
 
     function copyText(text) {
@@ -345,13 +408,28 @@ window.__ModuleLoader__.load({
       const [detail, setDetail] = React.useState(null)
       const [ask, setAsk] = React.useState(null)
       const [notice, setNotice] = React.useState(null)
+      // 正在取消的任务 id。取消要杀的是整棵进程树，可能要等一会儿才返回，
+      // 这期间按钮必须自己锁住，否则用户会连点，而第二次请求只会拿到「任务已经结束」。
+      const [cancelling, setCancelling] = React.useState(null)
+      const [roots, setRoots] = React.useState([])
+      // 正在等目录选择器的条目 id。打开系统对话框期间按钮要锁住，否则会开出第二个对话框。
+      const [picking, setPicking] = React.useState(null)
+      // 选完之后每个条目各自的结果：认出来了 / 缺什么。放在行下面，而不是顶部那一条全局错误里，
+      // 因为用户刚在**这一行**做了选择，回执就该出现在这一行。
+      const [pickResult, setPickResult] = React.useState(null)
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
         setLoading(true)
         try {
-          const payload = await api(`/inventory${refresh ? '?refresh=1' : ''}`)
+          // 根目录列表和清单一起取：面板要在同一次刷新里既显示"缺什么"，也显示"都在搜哪些目录"，
+          // 分成两次会让两者短暂不一致。
+          const [payload, rootsPayload] = await Promise.all([
+            api(`/inventory${refresh ? '?refresh=1' : ''}`),
+            api('/roots').catch(() => null),
+          ])
           setData(payload)
+          if (rootsPayload) setRoots(rootsPayload.roots || [])
           setError(null)
         } catch (err) {
           setError(String((err && err.message) || err))
@@ -488,6 +566,87 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 取消一个正在跑的任务。host 会杀整棵进程树（winget 拉起来的 msiexec 也得一起走），
+       * 所以这里必须等它返回再解锁——提前解锁会让用户以为没生效，再按一次。
+       * 取消不改动磁盘上的工具，所以不需要重新扫描清单；下一次轮询就会显示 cancelled。
+       */
+      const cancelJob = async (id) => {
+        setCancelling(id)
+        try {
+          const payload = await api('/jobs/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id }),
+          })
+          setJobs(payload.jobs || [])
+          // 列表里直接摊开清理边界：用户刚按了取消，最想知道的就是"它留下了什么"。
+          setDetail(id)
+          runningRef.current = (payload.jobs || []).filter((job) => job.status === 'running').length
+        } catch (err) {
+          setError(String((err && err.message) || err))
+          // 失败最常见的原因是任务在这几百毫秒里自己结束了；顺手对齐一次，别让面板停在旧状态。
+          try {
+            const payload = await api('/jobs')
+            setJobs(payload.jobs || [])
+          } catch {
+            /* 拉不到就保持现状，error 已经说明问题了 */
+          }
+        } finally {
+          setCancelling(null)
+        }
+      }
+
+      /**
+       * 「已经安装？选择对应文件夹」：让 DSH 打开系统目录选择器，把选中的目录记成一个额外根目录，
+       * 然后立刻重新扫描——用户要看到的是"这一下到底管不管用"，而不是"已经保存"。
+       *
+       * 取消（返回 null）是正常操作，不报错、不提示，只是什么都没发生。
+       */
+      const pickFolderFor = async (item) => {
+        setPicking(item.id)
+        setPickResult(null)
+        try {
+          const dir = await pickFolder()
+          if (!dir) return
+          const payload = await api('/roots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dir, id: item.id }),
+          })
+          setRoots(payload.roots || [])
+          const verdict = payload.verdict
+          setPickResult({
+            itemId: item.id,
+            ok: Boolean(verdict && verdict.ok),
+            text: verdict ? verdict.message : `${t('pickedOk')}：${dir}`,
+          })
+          // 认出来了才值得重扫；没认出来时重扫只会白等几秒，结论不会变。
+          if (verdict && verdict.ok) await load(true)
+        } catch (err) {
+          setPickResult({ itemId: item.id, ok: false, text: String((err && err.message) || err) })
+        } finally {
+          setPicking(null)
+        }
+      }
+
+      /** 撤销一条手动添加的根目录。选错必须能收回，否则用户只能去手改 JSON。 */
+      const removeRootDir = async (dir) => {
+        try {
+          const payload = await api('/roots', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dir }),
+          })
+          setRoots(payload.roots || [])
+          setPickResult(null)
+          // 移除会改变"某些条目还算不算已安装"，所以要重扫。
+          await load(true)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
       const items = (data && data.items) || []
       const summary = (data && data.summary) || { total: 0, installed: 0, missing: 0, essentialMissing: 0 }
       const visible = items
@@ -583,6 +742,36 @@ window.__ModuleLoader__.load({
               )
             : null,
           data && !groups.length && !error ? h('div', { className: 'dsh-de-empty' }, t('empty')) : null,
+          // 额外根目录区块：列出现在实际在搜的目录，手动添加的那条可以单独撤销。
+          // 来自环境变量的一条**没有**移除按钮——面板删不掉它，给一个按了没反应的按钮不如说清楚。
+          h(
+            'div',
+            { className: 'dsh-de-roots' },
+            h(
+              'div',
+              { className: 'dsh-de-grouphead' },
+              h('span', { className: 'dsh-de-groupname' }, `${t('rootsTitle')} · ${roots.length}`),
+              h('span', { className: 'dsh-de-spacer' }),
+              h('span', { className: 'dsh-de-pickq' }, t('rootsHint')),
+            ),
+            roots.length
+              ? roots.map((root) =>
+                  h(
+                    'div',
+                    { className: 'dsh-de-rootrow', key: root.dir },
+                    h('span', { className: 'dsh-de-rootdir', title: root.dir }, root.dir),
+                    h('span', { className: 'dsh-de-badge' }, root.removable ? t('rootsFromPick') : t('rootsFromEnv')),
+                    root.removable
+                      ? h(
+                          'button',
+                          { className: 'dsh-de-btn ghost', onClick: () => removeRootDir(root.dir) },
+                          t('rootsRemove'),
+                        )
+                      : null,
+                  ),
+                )
+              : h('div', { className: 'dsh-de-msg' }, t('rootsEmpty')),
+          ),
           groups.map((group) =>
             h(
               'div',
@@ -695,6 +884,29 @@ window.__ModuleLoader__.load({
                   !item.installed && mainPlan && mainPlan.note
                     ? h('div', { className: 'dsh-de-note' }, mainPlan.note)
                     : null,
+                  // 「已经安装？选择对应文件夹」。只在这个条目**确实能靠一个目录认出来**时出现
+                  // （hint 非 null，也就是 pathList 类探针）。对注册表/PATH 类条目显示它，
+                  // 用户选完什么也不会发生，只会以为插件坏了。
+                  !item.installed && item.hint && pickDirectoryFn
+                    ? h(
+                        'div',
+                        { className: 'dsh-de-pick' },
+                        h(
+                          'button',
+                          {
+                            className: 'dsh-de-btn',
+                            title: t('pickFolderTitle'),
+                            disabled: picking === item.id,
+                            onClick: () => pickFolderFor(item),
+                          },
+                          picking === item.id ? t('picking') : `📁 ${t('pickFolder')}`,
+                        ),
+                        h('span', { className: 'dsh-de-pickq' }, item.hint),
+                      )
+                    : null,
+                  pickResult && pickResult.itemId === item.id
+                    ? h('div', { className: `dsh-de-pickmsg${pickResult.ok ? '' : ' bad'}` }, pickResult.text)
+                    : null,
                 )
               }),
             ),
@@ -736,7 +948,15 @@ window.__ModuleLoader__.load({
                         detail === job.id ? t('close') : t('detail'),
                       ),
                       job.status === 'running'
-                        ? null
+                        ? h(
+                            'button',
+                            {
+                              className: 'dsh-de-btn',
+                              disabled: cancelling === job.id,
+                              onClick: () => cancelJob(job.id),
+                            },
+                            cancelling === job.id ? t('cancelling') : t('cancelJob'),
+                          )
                         : h('button', { className: 'dsh-de-btn ghost', onClick: () => deleteJob(job.id) }, t('deleteJob')),
                     ),
                     h(
@@ -767,6 +987,7 @@ window.__ModuleLoader__.load({
                             job.size ? h('span', null, job.size) : null,
                             job.exitCode === null || job.exitCode === undefined ? null : h('span', null, `exit ${job.exitCode}`),
                           ),
+                          cleanupText(job) ? h('div', { className: 'dsh-de-msg' }, cleanupText(job)) : null,
                           job.activity ? h('div', { className: 'dsh-de-activity' }, job.activity) : null,
                           job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
                           h('div', { className: 'dsh-de-groupname' }, t('logTail')),
@@ -798,6 +1019,20 @@ window.__ModuleLoader__.load({
           }
         } catch {
           /* locale 不可用时保持内置词条 */
+        }
+
+        // uiWorkspace 只提供「打开系统的目录选择器」这一件事，而浏览器给不了真实路径。
+        // 它同样是可选服务：拿不到就不显示那个按钮（见 DevEnvPage 里的判断），
+        // 因为面板其余部分（清单、安装、取消）都不该被它的缺失拖住。
+        try {
+          const workspace = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : undefined
+          // 取方法而不是服务对象：调用时不需要再带着 uiWorkspace 这个接收者。
+          pickDirectoryFn =
+            workspace && typeof workspace.pickDirectory === 'function'
+              ? (path) => workspace.pickDirectory(path)
+              : null
+        } catch {
+          /* 没有这个服务就退化为「不显示选目录入口」 */
         }
 
         ctx.slots.inject('main', () =>

@@ -16,7 +16,8 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { CATALOG, CATEGORIES } from './catalog.js'
-import { expandEnv, expandGlob, safeRead } from './paths.js'
+import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
+import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -38,6 +39,9 @@ const CACHE_TTL_MS = 60_000
 const PROBE_TIMEOUT_MS = 12_000
 const MAX_JOBS = 40
 const MAX_LOG_LINES = 300
+// 额外根目录的上限。每个根都会进入一部分 pathList 候选，理论上没上限也就没边界，
+// 而这条链路上的一切都该有边界——存爆一张 JSON 不是用户能自己发现的故障。
+const MAX_ROOTS = 20
 
 // ----------------------------------------------------------------- process
 
@@ -305,11 +309,93 @@ async function registryIndex(state) {
   return state.registryPromise
 }
 
+// ----------------------------------------------------------------- scanned roots
+
+/** Where the panel remembers the folders the user picked. */
+function rootsPathOf(state) {
+  if (!state.rootsPath) state.rootsPath = rootsFile()
+  return state.rootsPath
+}
+
+/**
+ * The folder list one scan should search: the environment variable plus the panel's store.
+ *
+ * The file is read on every scan (never cached across scans) because "pick a folder and see it work
+ * without restarting DSH" is the entire point of the store — a cached copy would quietly undo it.
+ * The merge itself lives in paths.js so that this list and the one `expandEnv` builds for
+ * `%DSH_DEV_ENV_ROOTS%` cannot drift apart.
+ */
+function scanRoots(state) {
+  const file = rootsPathOf(state)
+  const stored = loadRoots(file)
+  const env = envRoots()
+  return { file, stored, env, merged: configuredRoots(process.env, stored) }
+}
+
+/**
+ * The roots list the panel renders: every root a scan used, tagged with where it came from, and
+ * whether the user can remove it. One set by an administrator through the environment variable is
+ * marked removable: false on purpose — the panel cannot delete it, and a button that fails would
+ * look broken rather than honest.
+ */
+function rootsView(state) {
+  const info = state.rootsInfo ?? scanRoots(state)
+  const storedKeys = new Set(info.stored.map((dir) => String(dir).toLowerCase()))
+  return info.merged.map((dir) => {
+    const fromStore = storedKeys.has(String(dir).toLowerCase())
+    return { dir, source: fromStore ? 'picked' : 'env', removable: fromStore }
+  })
+}
+
 // ----------------------------------------------------------------- probes
 
-async function probeItem(item, state) {
+/**
+ * 用条目自己的探测规则，判断**某一个目录**算不算这个工具——也就是用户选文件夹之后那句回执。
+ *
+ * 复用 pathList 分支而不是另写一套判断：上一版的注释里已经写明，"诊断说行、探针说不行"是这类
+ * 插件最难查的分歧。这里和真正扫描走的是同一份规则，所以结论永远一致。
+ */
+function probeAtDir(probe, dir) {
+  const absence = []
+  if (probe.file && !existsSync(path.join(dir, probe.file))) absence.push(`缺少 ${probe.file}`)
+  for (const relative of probe.requires || []) {
+    if (!existsSync(path.join(dir, relative))) absence.push(`缺少 ${relative}`)
+  }
+  if (absence.length) return { ok: false, missing: absence }
+
+  let source = null
+  if (probe.file) {
+    source = safeRead(path.join(dir, probe.file))
+  } else {
+    let isFile = false
+    try {
+      isFile = statSync(dir).isFile()
+    } catch {
+      isFile = false
+    }
+    source = isFile ? safeRead(dir) : path.basename(dir)
+  }
+  if (source === null) return { ok: false, missing: ['这个目录读不出来'] }
+
+  const version = probe.pattern ? match(probe.pattern, source) : null
+  if (probe.pattern && !version) return { ok: false, missing: [`目录名或文件内容不匹配 ${probe.pattern}`] }
+
+  return {
+    ok: true,
+    missing: [],
+    version: version === null ? (probe.version ?? null) : `${probe.prefix ?? ''}${version}${probe.suffix ?? ''}`,
+  }
+}
+
+async function probeItem(item, state, options = {}) {
   const probe = item.probe
   if (!probe) return missing('未声明探测方式', diagOf(null))
+  // `roots` is only for tests: a scan relies on expandEnv's own default, which merges the
+  // environment variable with the panel's store. Stating the list explicitly keeps a guard from
+  // depending on whatever this machine happens to have picked.
+  const roots = options.roots
+  const expand = (input) =>
+    roots === undefined ? expandEnv(input) : expandEnv(input, process.env, undefined, roots)
   try {
     switch (probe.kind) {
       case 'argv': {
@@ -328,7 +414,7 @@ async function probeItem(item, state) {
         return missing(`退出码 ${result.code}`, diag)
       }
       case 'versionFile': {
-        const [resolved] = expandEnv(probe.path)
+        const [resolved] = expand(probe.path)
         const diag = diagOf(probe, { file: resolved ?? probe.path })
         if (!resolved) return missing(`${probe.path} 里的环境变量未设置`, diag)
         if (!existsSync(resolved)) return missing(`${resolved} 不存在`, diag)
@@ -338,7 +424,7 @@ async function probeItem(item, state) {
         return installed(`${probe.prefix ?? ''}${raw}${probe.suffix ?? ''}`, resolved, diag)
       }
       case 'dir': {
-        const [resolved] = expandEnv(probe.path)
+        const [resolved] = expand(probe.path)
         const diag = diagOf(probe, { file: resolved ?? probe.path })
         if (!resolved) return missing(`${probe.path} 里的环境变量未设置`, diag)
         if (!existsSync(resolved)) return missing(`${resolved} 不存在`, diag)
@@ -349,10 +435,26 @@ async function probeItem(item, state) {
         // 匹配到文件就按文件内容抓版本，匹配到目录就按目录名抓版本。
         // `requires` 是内容层面的额外门槛（例如"必须带 bin\javac.exe"才算 JDK），
         // 用来把同名但不同性质的东西排除掉。
+        //
+        // 候选里同时保留了两种起点（见 belowRoot / rootStartingPoints）：`%DSH_DEV_ENV_ROOTS%` 代表
+        // 用户自己指的一层，他既可能指工具的**父目录**，也可能指**工具自己那个目录**——面板的提示
+        // 让他选后者，所以这里必须两种都试，否则"选对了却还是认不出来"需要用户自己去猜该选哪一层。
         const diag = diagOf(probe)
         const tried = []
         for (const candidate of probe.paths || []) {
-          for (const withEnv of expandEnv(candidate)) {
+          const starts = expand(candidate)
+          const withParent = []
+          for (const start of starts) {
+            withParent.push(start)
+            // 用户可能指工具自己的目录（面板的提示就是这么教他的），这时候选多拼了一层。
+            // 把它降回父目录再试一次——只有最后一段本身是"工具目录名"（带通配或能匹配 pattern）时
+            // 才会这么做，所以不会把深路径的中间层拉进来、把候选数量无谓地翻倍。
+            if (mentionsRoots(candidate)) {
+              const parent = parentDirStartingPoint(start, probe)
+              if (parent) withParent.push(parent)
+            }
+          }
+          for (const withEnv of withParent) {
             for (const base of expandGlob(withEnv)) {
               const target = probe.file ? path.join(base, probe.file) : base
               tried.push(target)
@@ -443,6 +545,11 @@ async function scan(state, options = {}) {
     try {
       // 先刷新 PATH：刚用一键补齐装好的工具不该被漏掉
       await refreshPath(options.force === true)
+      // 再读一次额外的根目录。放在这里而不是模块加载时：用户在面板里选完文件夹，
+      // 下一次扫描就必须看到它——"不用重启 DSH"正是这个存储存在的理由。
+      const roots = scanRoots(state)
+      state.roots = roots.merged
+      state.rootsInfo = roots
       const results = new Array(CATALOG.length)
       let cursor = 0
       const workers = Array.from({ length: Math.min(8, CATALOG.length) }, async () => {
@@ -469,6 +576,9 @@ async function scan(state, options = {}) {
           where: result.where,
           reason: result.reason,
           debug: result.installed ? null : result.debug ?? null,
+          // 认这个工具需要什么，由它自己的探测声明生成；非 pathList 条目是 null，
+          // 面板据此决定"选文件夹"这个入口显不显示（对注册表/PATH 类条目它毫无用处）。
+          hint: describeProbeHint(entry),
           install: entry.install ?? {},
           plans: plansFor(entry).map((plan) => ({ mode: plan.mode, label: plan.label, url: plan.url ?? null, note: plan.note ?? null })),
         }
@@ -480,6 +590,9 @@ async function scan(state, options = {}) {
         platform: process.platform,
         host: os.hostname(),
         categories: CATEGORIES,
+        // 这一次扫描实际搜过哪些额外根目录，以及每条是怎么来的。
+        // 面板要把它们列出来并允许撤销——选错的目录必须能收回，否则用户只能去删 JSON。
+        roots: rootsView(state),
         items,
         summary: {
           total: items.length,
@@ -848,6 +961,73 @@ export function apply(ctx, config) {
       sendJson(res, 200, { ok: true, jobs: [...state.jobs.values()].sort((a, b) => b.startedAt - a.startedAt) })
     })
 
+    // 额外根目录：用户手动指的那些"解压在自己文件夹里"的工具。
+    // GET 列出、POST 增加、DELETE 撤销。整个存储的意义就是**不用重启 DSH**，
+    // 所以每次写盘都顺手把扫描缓存丢掉——下一次 /api/inventory 必须看到新目录。
+    register('/dsh-dev-env/api/roots', async (req, res) => {
+      const method = (req.method || 'GET').toUpperCase()
+      const rootsInfo = scanRoots(state)
+
+      if (method === 'GET') {
+        return sendJson(res, 200, { ok: true, roots: rootsView(state), file: rootsInfo.file, env: rootsInfo.env })
+      }
+
+      if (method === 'POST') {
+        const body = await readJson(req)
+        const raw = typeof body.dir === 'string' ? body.dir.trim() : ''
+        if (!raw) return sendJson(res, 400, { ok: false, error: '缺少 dir' })
+        if (!path.isAbsolute(raw)) return sendJson(res, 400, { ok: false, error: '需要一个完整的绝对路径' })
+        const dir = normaliseDir(raw)
+        if (!dir) return sendJson(res, 400, { ok: false, error: '这个目录不能作为根目录（比如盘符根目录）' })
+        if (!existsSync(dir)) return sendJson(res, 400, { ok: false, error: `这个目录不存在：${dir}` })
+
+        const next = addRoot(rootsInfo.stored, dir)
+        if (next.length > MAX_ROOTS) return sendJson(res, 400, { ok: false, error: `最多只能记 ${MAX_ROOTS} 个根目录` })
+        if (!saveRoots(rootsInfo.file, next)) {
+          return sendJson(res, 500, { ok: false, error: `保存失败：${rootsInfo.file || '(没有可用的存储位置)'}` })
+        }
+        state.cache = null
+        state.rootsInfo = null
+
+        // 选完立刻回执：这个目录到底算不算，缺什么。host 的探针说了算，不另做判断。
+        const entry = CATALOG.find((row) => row.id === body.id)
+        let verdict = null
+        if (entry && entry.probe?.kind === 'pathList') {
+          const outcome = probeAtDir(entry.probe, dir)
+          verdict = {
+            id: entry.id,
+            ok: outcome.ok,
+            version: outcome.version ?? null,
+            missing: outcome.missing,
+            message: outcome.ok
+              ? `已认出 ${entry.name}${outcome.version ? `（${outcome.version}）` : ''}`
+              : explainVerdict(entry, { ok: false, missing: outcome.missing }),
+          }
+        }
+        return sendJson(res, 200, { ok: true, roots: rootsView(state), added: dir, verdict, file: rootsInfo.file })
+      }
+
+      if (method === 'DELETE') {
+        const body = await readJson(req)
+        const raw = typeof body.dir === 'string' ? body.dir.trim() : ''
+        if (!raw) return sendJson(res, 400, { ok: false, error: '缺少 dir' })
+        const dir = normaliseDir(raw)
+        if (!dir) return sendJson(res, 400, { ok: false, error: '这个目录不是一条根目录记录' })
+        if (!rootsInfo.stored.some((entry) => entry.toLowerCase() === dir.toLowerCase())) {
+          // 环境变量里的根**不可删**：面板删不掉它，说清楚比给一个按了没反应的按钮好。
+          return sendJson(res, 404, { ok: false, error: '这条根目录不在面板的记录里（它来自环境变量，或已经被移除了）' })
+        }
+        if (!saveRoots(rootsInfo.file, removeRoot(rootsInfo.stored, dir))) {
+          return sendJson(res, 500, { ok: false, error: `保存失败：${rootsInfo.file || '(没有可用的存储位置)'}` })
+        }
+        state.cache = null
+        state.rootsInfo = null
+        return sendJson(res, 200, { ok: true, roots: rootsView(state), removed: dir, file: rootsInfo.file })
+      }
+
+      return sendJson(res, 405, { ok: false, error: 'GET / POST / DELETE only' })
+    })
+
     register('/dsh-dev-env/api/install', async (req, res) => {
       if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
       const body = await readJson(req)
@@ -1033,6 +1213,9 @@ export function apply(ctx, config) {
             host: data.host,
             summary: data.summary,
             categories: data.categories,
+            // Agent 需要知道"这次扫描额外搜过哪些目录"，否则它无法解释某个工具为什么在/不在，
+            // 也无法建议用户去面板里指一个目录。
+            roots: data.roots,
             items: items.map((item) => ({
               id: item.id,
               name: item.name,
@@ -1044,6 +1227,7 @@ export function apply(ctx, config) {
               where: item.where,
               reason: item.reason,
               debug: item.debug,
+              hint: item.hint,
               plans: item.plans,
             })),
           }
@@ -1169,6 +1353,24 @@ export function apply(ctx, config) {
     state.children.clear()
     state.cache = null
   }
+}
+
+// ----------------------------------------------------------------- test surface
+
+/**
+ * Test-only surface, used by `scripts/check.mjs`.
+ *
+ * The self-check has to drive the scanner's real probing (the "a picked folder actually makes the
+ * probe match" guard). Probing lives in this module, and the alternatives were both worse: exporting
+ * these under ordinary names would widen the plugin's public surface for no user, and copying the
+ * logic into the test would create exactly the second implementation this design avoids — the kind
+ * that lets a diagnosis disagree with the probe.
+ */
+export const __test = {
+  probeItem,
+  probeAtDir,
+  scanRoots,
+  rootsView,
 }
 
 // ----------------------------------------------------------------- http helpers
