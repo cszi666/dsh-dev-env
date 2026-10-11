@@ -398,8 +398,7 @@ export function startDownload(options) {
  * 启动时的恢复扫描：列出下载目录里所有未完成项，并给出每一项该做什么。
  * 这是「断网后下次启动能续就续」的入口——它只做判定，不动文件，方便调用方先汇报再执行。
  */
-export function inspectPending(dir) {
-  const pending = []
+export function inspectPending(dir) {  const pending = []
   let entries = []
   try {
     entries = readdirSync(dir)
@@ -435,4 +434,111 @@ export function inspectPending(dir) {
     })
   }
   return pending
+}
+
+// ----------------------------------------------------------------- url resolution
+
+/** Split a version into comparable numeric parts. Non-numeric tails are ignored on purpose. */
+const versionParts = (text) => String(text).split(/[.\-_]/).map((part) => Number.parseInt(part, 10)).filter(Number.isFinite)
+
+/**
+ * Which of these two versions is newer? Returns a positive number when `a` wins.
+ *
+ * Deliberately numeric and not lexicographic: `5.10` is newer than `5.9`, and sorting filenames as
+ * text would pick 5.9 and quietly install an older release.
+ */
+export function compareVersions(a, b) {
+  const left = versionParts(a)
+  const right = versionParts(b)
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const one = left[index] ?? 0
+    const other = right[index] ?? 0
+    if (one !== other) return one - other
+  }
+  return 0
+}
+
+/** Every archive-like href in a directory listing, resolved against the listing's own URL. */
+export function filesInListing(html, baseUrl) {
+  const found = []
+  for (const match of String(html).matchAll(/href\s*=\s*["']([^"']+\.(?:zip|tgz|tar\.gz|jar|exe|msi|7z))["']/gi)) {
+    try {
+      found.push(new URL(match[1], baseUrl).href)
+    } catch {
+      /* a malformed href is not worth failing the resolution for */
+    }
+  }
+  return found
+}
+
+/**
+ * Resolve an install source to a concrete, verified file URL.
+ *
+ * The catalog cannot hardcode these: Apache's `dlcdn` mirror only keeps the current release and its
+ * URL carries the version (`…/jmeter/binaries/apache-jmeter-5.6.3.zip`), so a pinned URL rots at the
+ * next release — silently, since a 404 is indistinguishable from a dead network without asking.
+ * So a source is described as *where to look* and the concrete URL is discovered here.
+ *
+ * Spec shapes:
+ *   { direct: 'https://…/file.zip' }                 a URL that never changes
+ *   { listing: 'https://…/binaries/', fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' }
+ *                                                    pick the newest match from a directory listing
+ *   { fallback: 'https://archive…/binaries/' }       tried (same rules) when the primary fails
+ *
+ * `probe` is the same HEAD/Range check the downloader uses, so "verified" means the server really
+ * answers with the file — not that the URL merely looks right.
+ */
+export async function resolveDownload(spec, options = {}) {
+  const { fetchImpl = fetch, probe = probeRemote, signal, timeoutMs = 15000 } = options
+  if (!spec || typeof spec !== 'object') return null
+
+  const fetchText = async (url) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const onAbort = () => controller.abort()
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      const response = await fetchImpl(url, {
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: { ...EXTRA_HEADERS, accept: 'text/html,application/xhtml+xml' },
+      })
+      if (!response.ok) return null
+      return await response.text()
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
+  }
+
+  /** Candidates in preference order, most specific first. */
+  const candidatesFrom = async (entry) => {
+    if (!entry) return []
+    if (entry.direct) return [{ url: entry.direct, version: entry.version ?? null }]
+    if (!entry.listing) return []
+    const html = await fetchText(entry.listing)
+    if (html === null) return []
+    const pattern = entry.fileNamePattern ? new RegExp(entry.fileNamePattern) : null
+    const matches = []
+    for (const url of filesInListing(html, entry.listing)) {
+      const name = decodeURIComponent(url.split('/').pop() ?? '')
+      const found = pattern ? pattern.exec(name) : [name]
+      if (pattern && !found) continue
+      matches.push({ url, version: found?.[1] ?? null, name })
+    }
+    matches.sort((a, b) => (a.version && b.version ? compareVersions(b.version, a.version) : 0))
+    return matches
+  }
+
+  for (const entry of [spec, spec.fallback]) {
+    for (const candidate of await candidatesFrom(entry)) {
+      const info = await probe(candidate.url, { fetchImpl, signal, timeoutMs })
+      if (info && info.status >= 200 && info.status < 300) {
+        return { ...candidate, total: info.total ?? null, etag: info.etag ?? null, lastModified: info.lastModified ?? null }
+      }
+    }
+  }
+  return null
 }
