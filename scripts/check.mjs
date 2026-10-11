@@ -11,14 +11,27 @@
  * bundle patch and the client entry.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CATALOG, CATEGORIES } from '../catalog.js'
 import { DESCRIPTIONS } from '../describe.js'
-import { expandEnv, expandGlob, globSegmentToRegExp } from '../paths.js'
+import {
+  expandEnv,
+  expandGlob,
+  globSegmentToRegExp,
+  loadStoredRoots,
+  mentionsRoots,
+  mergeRootList,
+  parentDirStartingPoint,
+  rootsFile,
+} from '../paths.js'
+import { describeProbeHint } from '../roots.js'
+import { __test } from '../index.js'
+import { runClientCancelTests } from './client-cancel.test.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PROBE_KINDS = new Set(['argv', 'versionFile', 'pathList', 'dir', 'pip', 'npmGlobal', 'registry'])
@@ -231,16 +244,75 @@ check('%DRIVES% works inside a longer path', () => {
 })
 
 check('%DSH_DEV_ENV_ROOTS% expands to the configured roots', () => {
+  // `[]` for the stored roots keeps this hermetic: without it, the expansion would merge whatever
+  // the machine running the test happens to have picked in the panel.
   const values = expandEnv('%DSH_DEV_ENV_ROOTS%\\apache-jmeter-*', {
     DSH_DEV_ENV_ROOTS: 'D:\\Java\\tools; E:\\extra\\;',
-  })
+  }, undefined, [])
   assert(values.length === 2, `expected 2 roots, got ${values.length}: ${values.join(', ')}`)
   assert(values[0] === 'D:\\Java\\tools\\apache-jmeter-*', `got ${values[0]}`)
   assert(values[1] === 'E:\\extra\\apache-jmeter-*', `trailing separator not trimmed: ${values[1]}`)
 })
 
 check('%DSH_DEV_ENV_ROOTS% contributes nothing when unset', () => {
-  assert(expandEnv('%DSH_DEV_ENV_ROOTS%\\x', {}).length === 0, 'expected []')
+  assert(expandEnv('%DSH_DEV_ENV_ROOTS%\\x', {}, undefined, []).length === 0, 'expected []')
+})
+
+check('a picked folder joins the environment roots and is deduplicated', () => {
+  // This is the whole point of the picker: the folder the user chose has to reach the scan without
+  // a DSH restart, and it must not duplicate a root the environment already provides.
+  const values = expandEnv('%DSH_DEV_ENV_ROOTS%\\apache-jmeter-*', {
+    DSH_DEV_ENV_ROOTS: 'D:\\Java\\tools',
+  }, undefined, ['e:\\picked\\jmeter', 'D:\\JAVA\\TOOLS\\'])
+  assert(values.length === 2, `expected 2 roots, got ${values.length}: ${values.join(', ')}`)
+  assert(values[0] === 'D:\\Java\\tools\\apache-jmeter-*', `the environment root should come first, got ${values[0]}`)
+  assert(values[1] === 'e:\\picked\\jmeter\\apache-jmeter-*', `the picked root should be appended, got ${values[1]}`)
+})
+
+check('a picked folder works with no environment variable at all', () => {
+  const values = expandEnv('%DSH_DEV_ENV_ROOTS%\\apache-jmeter-*', {}, undefined, ['D:\\Java\\测试工具'])
+  assert(values.length === 1, `expected 1 root, got ${values.length}: ${values.join(', ')}`)
+  assert(values[0] === 'D:\\Java\\测试工具\\apache-jmeter-*', `got ${values[0]}`)
+})
+
+check('only an input that mentions the roots variable touches the store', () => {
+  // The store is read lazily, on the inputs that can use it. Otherwise every catalog entry would
+  // pull the user's roots file into a scan that cannot possibly need it.
+  const values = expandEnv('%JAVA_HOME%\\bin', { JAVA_HOME: 'D:\\Java' }, undefined, ['D:\\picked'])
+  assert(values.length === 1 && values[0] === 'D:\\Java\\bin', `got ${values.join(', ')}`)
+})
+
+check('rootsFile honours the override, then the profile, then DSH_HOME', () => {
+  assert(rootsFile({ DSH_DEV_ENV_ROOTS_FILE: 'E:\\custom\\roots.json', DSH_PROFILE_DIR: 'C:\\p' }) === 'E:\\custom\\roots.json',
+    'an explicit override must win')
+  assert(rootsFile({ DSH_PROFILE_DIR: 'C:\\p' }) === path.join('C:\\p', 'dsh-dev-env', 'roots.json'),
+    'the store belongs to the profile, not to the plugin folder')
+  assert(rootsFile({ DSH_HOME: 'C:\\home' }) === path.join('C:\\home', 'profiles', 'default', 'dsh-dev-env', 'roots.json'),
+    'DSH_HOME is the fallback')
+  assert(rootsFile({}) === null, 'no base directory means no store rather than a relative path')
+})
+
+check('the stored roots file degrades to empty instead of throwing', () => {
+  assert(loadStoredRoots(null).length === 0, 'no path is not an error')
+  assert(loadStoredRoots(path.join(ROOT, 'definitely-not-here.json')).length === 0, 'a missing file is not an error')
+  // A corrupt file must not take the whole scan down with it.
+  const corrupt = path.join(os.tmpdir(), `dsh-dev-env-roots-${process.pid}.json`)
+  writeFileSync(corrupt, '{ this is not json', 'utf8')
+  try {
+    assert(loadStoredRoots(corrupt).length === 0, 'corrupt JSON should degrade to []')
+    writeFileSync(corrupt, JSON.stringify({ roots: ['D:\\Java', '', null, 7, 'E:\\sdk'] }), 'utf8')
+    const list = loadStoredRoots(corrupt)
+    assert(list.length === 2, `expected the two usable roots, got ${JSON.stringify(list)}`)
+  } finally {
+    rmSync(corrupt, { force: true })
+  }
+})
+
+check('mergeRootList deduplicates case-insensitively and keeps the first spelling', () => {
+  const merged = mergeRootList(['D:\\Java\\tools'], ['d:\\java\\tools\\', 'E:\\picked', 'E:\\picked\\'])
+  assert(merged.length === 2, `got ${JSON.stringify(merged)}`)
+  assert(merged[0] === 'D:\\Java\\tools', `first spelling should win, got ${merged[0]}`)
+  assert(merged[1] === 'E:\\picked', `got ${merged[1]}`)
 })
 
 check('globSegmentToRegExp anchors and is case-insensitive', () => {
@@ -275,6 +347,151 @@ check('expandGlob honours an injected existence check for literal paths', () => 
   const probe = (candidate) => candidate === 'C:\\fake\\present'
   assert(expandGlob('C:\\fake\\present', probe).length === 1, 'literal present path')
   assert(expandGlob('C:\\fake\\absent', probe).length === 0, 'literal absent path')
+})
+
+// ------------------------------------------------------------------ picked folders
+console.log('\npicked folders')
+
+/**
+ * A picked folder that makes a real probe match.
+ *
+ * This is the automated form of the defect found by hand while wiring the picker: `roots.js` told the
+ * user to choose the tool's own directory, while the catalog's candidate is
+ * `<root>\<tool-folder-pattern>` — so the advertised pick expanded to
+ * `…\apache-jmeter-5.6.3\apache-jmeter-*`, which exists nowhere, and the feature silently did
+ * nothing. These checks build a throwaway JMeter-shaped folder and assert both pick levels work.
+ */
+check('a picked root makes the scan find the tool, whichever level was picked', async () => {
+  const base = path.join(os.tmpdir(), `dsh-dev-env-pick-${process.pid}`)
+  const toolDir = path.join(base, 'apache-jmeter-9.9.9')
+  mkdirSync(toolDir, { recursive: true })
+  try {
+    const entry = CATALOG.find((row) => row.id === 'jmeter')
+    assert(entry, 'the catalog needs a jmeter entry for this guard')
+
+    const state = { roots: [] }
+    // The candidate the catalog actually uses for a user-supplied root.
+    const candidate = entry.probe.paths.find((value) => mentionsRoots(value))
+    assert(candidate, 'the jmeter entry should have a %DSH_DEV_ENV_ROOTS% candidate')
+
+    for (const picked of [toolDir, base]) {
+      // Expansion #1: the user's root is substituted in.
+      const expanded = expandEnv(candidate, { DSH_DEV_ENV_ROOTS: picked }, undefined, [picked])
+      assert(expanded.length === 1, `one candidate expected for ${picked}, got ${JSON.stringify(expanded)}`)
+      // Expansion #2: the last segment is a wildcard, expanded against the real filesystem.
+      const starts = [expanded[0]]
+      const parent = parentDirStartingPoint(expanded[0], entry.probe)
+      if (parent) starts.push(parent)
+      const matches = starts.flatMap((start) => expandGlob(start))
+      assert(matches.includes(toolDir),
+        `picking ${path.basename(picked)} should reach ${toolDir}, got ${JSON.stringify(matches)}`)
+
+      // And the scanner's own probe must agree, through the same code path a scan uses. The root is
+      // handed over explicitly so the guard cannot depend on this machine's own picked folders.
+      const result = await __test.probeItem(entry, state, { roots: [picked] })
+      assert(result.installed === true, `probe should report installed for ${picked}, got ${JSON.stringify(result)}`)
+      assert(result.version === '9.9.9', `version should come from the folder name, got ${result.version}`)
+      assert(result.where === toolDir, `where should be the tool dir, got ${result.where}`)
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+check('a picked folder reports the specific condition it failed, not just "not found"', async () => {
+  const base = path.join(os.tmpdir(), `dsh-dev-env-miss-${process.pid}`)
+  const toolDir = path.join(base, 'apache-jmeter-9.9.9')
+  mkdirSync(path.join(toolDir, 'bin'), { recursive: true })
+  try {
+    const entry = CATALOG.find((row) => row.id === 'jmeter')
+    const matched = __test.probeAtDir(entry.probe, toolDir)
+    assert(matched.ok === true, `expected a match, got ${JSON.stringify(matched)}`)
+    assert(matched.version === '9.9.9', `got version ${matched.version}`)
+
+    // A folder whose name does not match the pattern is the interesting failure: the message has to
+    // name the pattern, because "pick the tool's own folder" is not actionable on its own.
+    const wrongName = path.join(base, 'apache-jmeter')
+    mkdirSync(wrongName, { recursive: true })
+    const bad = __test.probeAtDir(entry.probe, wrongName)
+    assert(bad.ok === false, 'a folder that does not match the pattern must not count')
+    assert(bad.missing.some((text) => text.includes('apache-jmeter-([\\d.]+)')),
+      `the failure should name the pattern, got ${JSON.stringify(bad.missing)}`)
+
+    // The hint is what the panel shows before the user even picks; it must not contradict the rule.
+    const hint = describeProbeHint(entry)
+    assert(typeof hint === 'string' && hint.includes('上一级'),
+      `the hint should say both levels work, got ${JSON.stringify(hint)}`)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+check('a tool that needs a file inside the folder rejects the folder above it', async () => {
+  // `probeAtDir` is what the panel's receipt says, so its negative path has to be trustworthy too.
+  const base = path.join(os.tmpdir(), `dsh-dev-env-file-${process.pid}`)
+  const toolDir = path.join(base, 'tool-1.2.3')
+  mkdirSync(path.join(toolDir, 'bin'), { recursive: true })
+  writeFileSync(path.join(toolDir, 'release'), 'JAVA_VERSION="1.2.3"', 'utf8')
+  try {
+    const probe = { kind: 'pathList', file: 'release', pattern: 'JAVA_VERSION="([^"]+)"', requires: ['bin'] }
+    const good = __test.probeAtDir(probe, toolDir)
+    assert(good.ok === true, `expected a match, got ${JSON.stringify(good)}`)
+    assert(good.version === '1.2.3', `got version ${good.version}`)
+
+    const above = __test.probeAtDir(probe, base)
+    assert(above.ok === false, 'the parent of a tool folder must not count as the tool')
+    assert(above.missing.some((text) => text.includes('release')), `got ${JSON.stringify(above.missing)}`)
+    assert(above.missing.some((text) => text.includes('bin')), `got ${JSON.stringify(above.missing)}`)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+check('a tool folder that carries a version file needs the level above it to be tried', async () => {
+  // This is the case `parentDirStartingPoint()` exists for, and the one a naive "just append the
+  // catalog's pattern to the picked root" implementation cannot handle: the catalog writes
+  // `<root>\tool-<version>`, so picking `tool-1.2.3` itself yields `…\tool-1.2.3\tool-1.2.3`, which
+  // exists nowhere. With a `file` probe there is no folder-name fallback to save it — the pick would
+  // silently do nothing. Verified here without any catalog entry, so it cannot rot with the catalog.
+  const base = path.join(os.tmpdir(), `dsh-dev-env-level-${process.pid}`)
+  const toolDir = path.join(base, 'tool-1.2.3')
+  mkdirSync(toolDir, { recursive: true })
+  writeFileSync(path.join(toolDir, 'release'), 'JAVA_VERSION="1.2.3"', 'utf8')
+  try {
+    // A probe with a `file`: there is no folder-name fallback to save a wrong-level pick, which is
+    // exactly why the level above has to be tried.
+    const entry = {
+      id: 'fixture-tool',
+      name: 'Fixture Tool',
+      probe: { kind: 'pathList', file: 'release', pattern: 'JAVA_VERSION="([^"]+)"', paths: ['%DSH_DEV_ENV_ROOTS%\\tool-*'] },
+    }
+
+    // Picking the tool's own folder: the candidate expands to a path that cannot exist …
+    const naive = expandEnv(entry.probe.paths[0], {}, undefined, [toolDir])
+    assert(naive[0] === path.join(toolDir, 'tool-*'),
+      `the naive expansion is the defect: got ${naive[0]}`)
+    assert(expandGlob(naive[0]).length === 0, 'the naively-appended path must not exist')
+
+    // … and the real probe must still find the tool, because it also tries the level above.
+    const fromToolFolder = await __test.probeItem(entry, {}, { roots: [toolDir] })
+    assert(fromToolFolder.installed === true,
+      `picking the tool folder must work, got ${JSON.stringify(fromToolFolder)}`)
+    assert(fromToolFolder.version === '1.2.3', `got version ${fromToolFolder.version}`)
+    // With a `file` probe, `where` is the file the version was read out of.
+    assert(fromToolFolder.where === path.join(toolDir, 'release'), `got ${fromToolFolder.where}`)
+
+    // Picking the parent must work too: that is the same expansion without the extra level.
+    const fromParent = await __test.probeItem(entry, {}, { roots: [base] })
+    assert(fromParent.installed === true, `picking the parent must work, got ${JSON.stringify(fromParent)}`)
+    assert(fromParent.where === path.join(toolDir, 'release'), `got ${fromParent.where}`)
+
+    // A literal last segment is never "a tool folder", so a level is never invented above it.
+    const literal = expandEnv('%DSH_DEV_ENV_ROOTS%\\tools', {}, undefined, ['C:\\Tools'])
+    assert(parentDirStartingPoint(literal[0], entry.probe) === null,
+      `a literal last segment has no level above to try, got ${parentDirStartingPoint(literal[0], entry.probe)}`)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
 })
 
 // ------------------------------------------------------------------ packaging
@@ -360,6 +577,21 @@ check('client bundle registers a factory under the package name', () => {
     `client factory id must equal the package name (${pkg.name})`)
 })
 
+check('the cancel button and the cancel route are wired to each other', () => {
+  // The route existed for a while with nothing calling it: a slow `winget install` could not be
+  // stopped from the panel at all. This check keeps the two halves joined — it fails if the button
+  // goes away, and equally if a refactor moves the host route out from under the client.
+  const client = readFileSync(path.join(ROOT, pkg.exports['./client']), 'utf8')
+  assert(client.includes("'/jobs/cancel'"), 'client.js no longer posts to /jobs/cancel')
+  assert(client.includes("t('cancelJob')"), 'client.js no longer renders a cancel button')
+
+  const host = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  assert(host.includes("'/dsh-dev-env/api/jobs/cancel'"), 'index.js no longer registers the cancel route')
+  // The route has to stay POST-only: it kills a process tree, so it must not be reachable by a
+  // plain link or a prefetch.
+  assert(/jobs\/cancel'[\s\S]{0,400}?POST only/.test(host), 'the cancel route must still reject non-POST requests')
+})
+
 check('files[] shipped by npm actually exist', () => {
   for (const entry of pkg.files || []) {
     if (entry.includes('*')) continue
@@ -433,6 +665,25 @@ for (const doc of ['README.md', 'README.zh-CN.md', 'CONTRIBUTING.md', 'SECURITY.
     console.warn(`  warn  ${doc} still contains the GITHUB_USER placeholder`)
   }
 }
+
+// ------------------------------------------------------------------ panel behaviour
+// The parts of the panel that get behavioural tests rather than shape checks: cancel, and picking a
+// folder for a tool the scanner cannot find. They render the real client.js against a minimal
+// React/DOM shim and click the actual buttons. See that file for why the shim exists instead of a
+// devDependency.
+console.log('\npanel behaviour')
+
+await runClientCancelTests({
+  async check(name, fn) {
+    try {
+      await fn()
+      console.log(`  ok    ${name}`)
+    } catch (error) {
+      failures += 1
+      console.error(`  FAIL  ${name}\n        ${error && error.message ? error.message : error}`)
+    }
+  },
+})
 
 // ------------------------------------------------------------------ summary
 console.log('')

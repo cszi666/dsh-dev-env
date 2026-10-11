@@ -5,6 +5,62 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Point the scanner at a tool it cannot guess: extra roots, without restarting DSH.** Some tools
+  are unzipped into a folder of the user's own — the registry has never heard of them and `PATH` does
+  not contain them, so no fixed candidate list can find them. The escape hatch used to be the
+  `DSH_DEV_ENV_ROOTS` environment variable, which needs `setx` **and a DSH restart**. The panel can
+  now add a folder itself: `GET` / `POST` / `DELETE /dsh-dev-env/api/roots` remember it in the
+  profile's `dsh-dev-env/roots.json` (`DSH_DEV_ENV_ROOTS_FILE` overrides the location) and merge it
+  with the environment variable on the next scan. Adding or removing a root invalidates the scan
+  cache, so the inventory reflects it immediately. `hint` is exposed per catalog entry — the sentence
+  that says what a given tool needs to be recognised — and is `null` for `registry` / `argv` entries,
+  where choosing a folder would achieve nothing.
+- **A folder pick for a tool works whether the user picks the tool's own directory or its parent.**
+  The catalog writes candidates as `<root>\<tool-folder-pattern>`, so picking the tool folder
+  appended the pattern to an already-complete path (`…\apache-jmeter-5.6.3\apache-jmeter-*`, which
+  exists nowhere) and the pick silently looked broken. The probe now also tries the directory above
+  when the last path segment is the tool folder itself. Verified against a real JMeter install:
+  after `POST /api/roots` the very next scan reports `installed: true, version: 5.6.3`.
+- **“Already installed? Pick its folder” in the panel.** A missing entry that a folder could actually
+  identify now offers the button next to its install action, together with the sentence saying what
+  that tool needs. Picking one calls `uiWorkspace.pickDirectory()`, remembers the folder, and reports
+  straight back whether the tool was recognised there — or what was still missing. The extra folders
+  are listed with a Remove action, so a wrong pick is undoable. The button appears only for
+  `pathList` entries (where a folder can help) and only when the client service is present, so there
+  is never a control that cannot work.
+- **A Cancel button on every running job.** The host route `POST /dsh-dev-env/api/jobs/cancel`
+  existed and killed the whole process tree, but nothing in the panel ever called it, so a slow
+  `winget install` — JMeter's Apache mirror, for instance — could not be stopped from the UI at all.
+  The button now sits on the job's own row, disables itself and reads `取消中…` while the request is
+  in flight, and the row ends as `cancelled`.
+- **The cleanup boundary is shown, not implied.** On cancel the host records whether it removed its
+  own partial files or left an external installer's cache alone; the job detail now says which one
+  applied. A cancelled `winget` install reports that its downloaded cache is not ours to delete
+  rather than letting a clean-looking "cancelled" imply a clean sweep.
+- **Behavioural tests for the panel**, in `scripts/client-cancel.test.mjs`. The self-check has no
+  dependencies by design, so this renders the real `client.js` against a minimal React/DOM shim
+  written for it and clicks the actual buttons: the cancel POST, the in-flight lock, the `cancelled`
+  row and its cleanup text, which rows offer a folder picker and which must not, the post-pick
+  verdict, a cancelled pick writing nothing, and the remove action. A companion shape check fails if
+  either half of the cancel wiring is removed.
+- **Self-check coverage for picked folders**, against real temporary `apache-jmeter-9.9.9`-shaped
+  folders: both pick levels reach the tool, a failed pick names the condition that failed, and a
+  probe that reads a version out of a file genuinely needs the level above it. That last guard is
+  written against a local fixture probe rather than a catalog entry, so it cannot rot with the
+  catalog, and each was verified by mutating the code into failing.
+
+### Changed
+
+- **A finished job no longer animates as if it were still working.** The indeterminate progress bar
+  is only drawn while a job is running; cancelled and failed jobs show a stopped bar instead of a
+  sliding one.
+- **`roots.js` is now wired up**, so the self-check's import guard demands it in `files[]`. That
+  guard is the one whose absence shipped 1.1.0 without `describe.js`.
+
 ## [1.1.1] - 2026-10-10
 
 **1.1.0 could not activate on any machine that installed it from npm.** Do not use 1.1.0; upgrade
