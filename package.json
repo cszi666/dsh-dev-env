@@ -53,6 +53,7 @@
     "describe.js",
     "paths.js",
     "roots.js",
+    "downloads.js",
     "scripts/check.mjs",
     "scripts/client-cancel.test.mjs",
     "cordis.patch.yml",

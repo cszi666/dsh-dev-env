@@ -267,7 +267,14 @@ export const CATALOG = [
         '%ProgramFiles%\\apache-jmeter-*', '%ProgramData%\\apache-jmeter-*',
         '%DRIVES%\\apache-jmeter-*', '%DRIVES%\\Tools\\apache-jmeter-*',
         '%DSH_DEV_ENV_ROOTS%\\apache-jmeter-*'] },
-    install: { winget: 'Apache.JMeter', page: 'https://jmeter.apache.org/download_jmeter.cgi' } },
+    // 自己下载的候选方案。指向**目录列表**而不是具体文件：dlcdn 只保留当前版本，文件名里带版本号，
+    // 写死的那一刻就开始腐烂，而 404 和"网络不通"长得一模一样，没人会发现问题。
+    // archive.apache.org 保留所有版本，作为列表不可用时的退路。
+    install: { winget: 'Apache.JMeter', page: 'https://jmeter.apache.org/download_jmeter.cgi',
+      download: { listing: 'https://dlcdn.apache.org/jmeter/binaries/',
+        fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$',
+        fallback: { listing: 'https://archive.apache.org/dist/jmeter/binaries/',
+          fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' } } } },
 
   { id: 'zentao', name: '禅道 ZenTao', nameEn: 'ZenTao', category: 'test',
     probe: { kind: 'pathList', file: 'app\\zentao\\VERSION', pattern: '([\\d.]+)',

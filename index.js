@@ -11,13 +11,14 @@
  */
 
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
+import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -655,16 +656,31 @@ function plansFor(item) {
       note: source.note ?? null,
     })
   }
+  if (source.download) {
+    // 我们自己去取的那个方案。排在 winget 之后、page 之前：winget 走的是系统包管理器（
+    // 升级/卸载都归它管，通常仍是首选），但它在网络受限时会静默卡住，那时候这个方案是唯一的出路。
+    plans.push({
+      mode: 'download',
+      label: `自己下载 ${item.name} 的官方压缩包`,
+      download: source.download,
+      note: source.downloadNote ?? null,
+    })
+  }
   if (source.page) {
     plans.push({ mode: 'page', label: `打开官方下载页 ${source.page}`, url: source.page, note: source.note ?? null })
   }
   return plans
 }
 
+/**
+ * 挑方案。`auto` 的优先级：winget/npm/pip（托管安装器，升级卸载都有人管）→ 自己下载 →
+ * 打开官网。自己下载排在托管安装器之后是刻意的：它要我们自己决定解压到哪、将来由谁升级，
+ * 只有在没有托管方案、或者用户明确点名时才用它。
+ */
 function choosePlan(plans, requested) {
   if (!plans.length) return null
   if (!requested || requested === 'auto') {
-    return plans.find((plan) => plan.mode !== 'page') ?? plans[0]
+    return plans.find((plan) => !['page', 'download'].includes(plan.mode)) ?? plans.find((plan) => plan.mode === 'download') ?? plans[0]
   }
   return plans.find((plan) => plan.mode === requested) ?? null
 }
@@ -693,6 +709,27 @@ function trimJobs(jobs) {
     const job = ordered.shift()
     jobs.delete(job.id)
   }
+}
+
+// ----------------------------------------------------------------- own downloads
+
+/** 我们自己下载/解压的目录：跟着 profile 走，不写进插件自己的目录（那是只读的发布物）。 */
+function downloadsDir() {
+  const file = rootsFile()
+  if (!file) return path.join(os.tmpdir(), 'dsh-dev-env-downloads')
+  return path.join(path.dirname(file), 'downloads')
+}
+
+function speedHistoryFile() {
+  const file = rootsFile()
+  if (!file) return null
+  return path.join(path.dirname(file), 'download-speeds.json')
+}
+
+/** 解压一个 zip。用系统自带的 tar.exe（Win10 1803+），不额外依赖 7-Zip。 */
+async function extractZip(archive, into) {
+  const result = await run(['tar', '-xf', archive, '-C', into], { timeoutMs: 15 * 60_000 })
+  return { ok: result.ok, error: result.ok ? null : snippet(result.stdout, result.stderr, 300) ?? `退出码 ${result.code}` }
 }
 
 /**
@@ -765,6 +802,138 @@ function killTree(pid) {
   })
 }
 
+/**
+ * 自己下载并解压一个工具。这是「像浏览器那样」的进度、速率、ETA、断点续传和干净取消的唯一实现路径：
+ * 托管安装器（winget/pip/npm）在管道下连体积和速率都不打印，也没有续传接口。
+ *
+ * 全部状态写在 job 对象上（而不是另开一份），所以面板和 dev_env_job 不需要区分任务类型。
+ */
+function startOwnDownload(state, item, plan, job) {
+  const dir = downloadsDir()
+  const historyFile = speedHistoryFile()
+  let cancelled = false
+  let handle = null
+
+  // 取消回调一注册就生效，所以**下载还没开始时按取消也有用**：它只是把 cancelled 立起来，
+  // 后面每一处都检查它，于是不会有"取消之后还在后台默默下完"的窗口。
+  downloadCancels.set(job.id, () => {
+    cancelled = true
+    if (handle) handle.cancel()
+  })
+
+  const finish = (status, error = null) => {
+    job.status = status
+    job.endedAt = Date.now()
+    if (error) job.error = error
+    downloadCancels.delete(job.id)
+  }
+
+  const work = async () => {
+    job.phase = 'download'
+    job.activity = '正在解析下载地址…'
+    job.log.push(`下载源：${plan.download.listing ?? plan.download.direct ?? '(未声明)'}`)
+
+    const resolved = await resolveDownload(plan.download)
+    if (!resolved) {
+      job.log.push('没有解析到可下载的文件（列表不可用，或所有候选都返回了错误状态码）')
+      return finish('failed', '找不到可下载的文件')
+    }
+    job.url = resolved.url
+    job.version = resolved.version ?? null
+    job.totalBytes = resolved.total ?? null
+    job.log.push(`已解析：${resolved.name}${resolved.total ? `（${formatBytes(resolved.total)}）` : ''}`)
+
+    mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, resolved.name)
+    const history = loadHistory(historyFile)
+    const host = (() => {
+      try {
+        return new URL(resolved.url).host
+      } catch {
+        return null
+      }
+    })()
+
+    handle = startDownload({
+      url: resolved.url,
+      file,
+      total: resolved.total ?? null,
+      history: history[host] ? { [host]: history[host] } : {},
+      meter: undefined, // 引擎自带的速度计，历史均值由 history 兜底
+      onProgress: (snapshot) => {
+        // 进度同时写"结构化字段"和"日志行"：面板读字段，人读日志。
+        job.receivedBytes = snapshot.received
+        job.totalBytes = snapshot.total ?? job.totalBytes
+        if (typeof snapshot.percent === 'number') job.percent = snapshot.percent
+        job.bytesPerSecond = snapshot.expectedBytesPerSecond ?? snapshot.liveBytesPerSecond ?? null
+        job.etaSeconds = snapshot.etaSeconds
+        if (snapshot.note && snapshot.note !== job.note) {
+          job.note = snapshot.note
+          job.log.push(snapshot.note)
+        }
+        const parts = [formatBytes(snapshot.received)]
+        if (snapshot.total) parts.push(`/ ${formatBytes(snapshot.total)}`)
+        if (snapshot.percent !== null) parts.push(`${snapshot.percent}%`)
+        if (job.bytesPerSecond) parts.push(`${formatBytes(job.bytesPerSecond)}/s`)
+        if (snapshot.etaSeconds !== null) parts.push(`剩余 ${snapshot.etaSeconds}s`)
+        job.activity = parts.join('  ')
+      },
+    })
+
+    const result = await handle.promise
+    if (cancelled || job.status === 'cancelled') return
+
+    if (historyFile && host) {
+      const rate = job.bytesPerSecond
+      if (rate) saveHistory(historyFile, recordSpeed(history, host, rate))
+    }
+
+    // 解压到下载目录里自己的文件夹，然后把那一层登记成额外根目录——于是接下来的扫描
+    // 会像发现任何其它工具一样发现它（走的是同一条探针，不是特例）。
+    job.phase = 'install'
+    job.percent = 100
+    job.activity = '正在解压…'
+    const extracted = await extractZip(file, dir)
+    if (!extracted.ok) {
+      job.log.push(`解压失败：${extracted.error}`)
+      job.log.push('压缩包已保留，可以手动解开')
+      return finish('failed', `解压失败：${extracted.error}`)
+    }
+
+    const inner = path.join(dir, resolved.name.replace(/\.zip$/i, ''))
+    const target = existsSync(inner) ? inner : dir
+    const stored = addRoot(loadRoots(rootsPathOf(state)), target)
+    if (saveRoots(rootsPathOf(state), stored)) {
+      state.cache = null
+      state.rootsInfo = null
+      job.log.push(`已把 ${target} 记为额外根目录，下次扫描即可识别`)
+    } else {
+      job.log.push(`解压完成，但没能记住目录 ${target}（存储不可写）`)
+    }
+    try {
+      rmSync(file, { force: true })
+    } catch {
+      /* 留着一个已解压的压缩包不算问题 */
+    }
+
+    job.phase = 'done'
+    job.activity = `已解压到 ${target}`
+    job.log.push(`完成：${target}`)
+    finish('succeeded')
+  }
+
+  work().catch((error) => {
+    const message = String((error && error.message) || error)
+    if (cancelled || job.status === 'cancelled') {
+      job.log.push(`已取消：${message}`)
+      return
+    }
+    job.log.push(`失败：${message}`)
+    if (handle) handle.cancel() // 认证后仍可能失败：把残片删掉，不留半成品
+    finish('failed', message)
+  })
+}
+
 function startJob(state, item, plan) {
   const job = {
     id: randomUUID().slice(0, 8),
@@ -794,6 +963,12 @@ function startJob(state, item, plan) {
     job.phase = job.status === 'failed' ? 'install' : 'done'
     job.activity = job.log[0]
     job.endedAt = Date.now()
+    return job
+  }
+
+  if (plan.mode === 'download') {
+    // 交给下面的 startOwnDownload；它在后台跑，job 先返回给调用方。
+    startOwnDownload(state, item, plan, job)
     return job
   }
 

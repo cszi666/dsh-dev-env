@@ -84,6 +84,10 @@ window.__ModuleLoader__.load({
       rootsFromEnv: '来自环境变量',
       rootsFromPick: '手动添加',
       rootsRemove: '移除',
+      speed: '速率',
+      eta: '剩余',
+      fromOwnDownload: '自己下载',
+      extResumed: '已续传',
     }
     const DICT_EN = {
       panel: 'Dev Env',
@@ -148,6 +152,10 @@ window.__ModuleLoader__.load({
       rootsFromEnv: 'from the environment variable',
       rootsFromPick: 'added by hand',
       rootsRemove: 'Remove',
+      speed: 'rate',
+      eta: 'left',
+      fromOwnDownload: 'own download',
+      extResumed: 'resumed',
     }
 
     // ------------------------------------------------------------ language
@@ -291,6 +299,34 @@ window.__ModuleLoader__.load({
       const seconds = total % 60
       if (minutes < 60) return `${minutes}m${String(seconds).padStart(2, '0')}s`
       return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`
+    }
+
+    /**
+     * 字节数说成人话。只用于**我们自己下载**的任务——winget / pip / npm 在管道下不打印体积，
+     * 那种任务没有这些字段，也就不显示（编一个数比不显示更糟）。
+     */
+    function bytesText(bytes) {
+      if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return null
+      const units = ['B', 'KB', 'MB', 'GB']
+      let value = bytes
+      let unit = 0
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024
+        unit += 1
+      }
+      return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+    }
+
+    /** 速率与剩余时间，只在拿得到真实数据时才返回内容。 */
+    function transferText(job, lang) {
+      const parts = []
+      const speed = bytesText(job.bytesPerSecond)
+      if (speed) parts.push(`${speed}/s`)
+      if (typeof job.etaSeconds === 'number' && job.etaSeconds >= 0) parts.push(`${t('eta')} ${durationText(job.etaSeconds * 1000)}`)
+      const transferred = bytesText(job.receivedBytes)
+      const total = bytesText(job.totalBytes)
+      if (transferred && total) parts.push(`${transferred} / ${total}`)
+      return parts.length ? parts.join('  ·  ') : null
     }
 
     // 参考链接：中文界面走百度百科，英文界面走维基百科。
@@ -974,6 +1010,11 @@ window.__ModuleLoader__.load({
                           : h('span', { className: 'dsh-de-barlabel' }, `${progress.percent}%`),
                       ),
                       job.size ? h('span', { className: 'dsh-de-badge' }, job.size) : null,
+                      // 速率/ETA/已传字节：只有我们自己下载的任务才有这些字段。
+                      // 托管安装器（winget 等）在管道下不给体积，这里就什么都不显示。
+                      transferText(job, currentLang)
+                        ? h('span', { className: 'dsh-de-badge' }, transferText(job, currentLang))
+                        : null,
                     ),
                     // 详情：下载/安装进度、当前活动行、完整日志都在这里。
                     detail === job.id
@@ -986,6 +1027,10 @@ window.__ModuleLoader__.load({
                             job.percent === null || job.percent === undefined ? null : h('span', null, `${job.percent}%`),
                             job.size ? h('span', null, job.size) : null,
                             job.exitCode === null || job.exitCode === undefined ? null : h('span', null, `exit ${job.exitCode}`),
+                            job.bytesPerSecond ? h('span', null, `${t('speed')}: ${bytesText(job.bytesPerSecond)}/s`) : null,
+                            typeof job.etaSeconds === 'number' && job.etaSeconds >= 0
+                              ? h('span', null, `${t('eta')}: ${durationText(job.etaSeconds * 1000)}`)
+                              : null,
                           ),
                           cleanupText(job) ? h('div', { className: 'dsh-de-msg' }, cleanupText(job)) : null,
                           job.activity ? h('div', { className: 'dsh-de-activity' }, job.activity) : null,
