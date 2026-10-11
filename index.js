@@ -631,6 +631,27 @@ const SIZE_RE = /(\d+(?:[.,]\d+)?)\s*(?:KB|MB|GB)(?:\s*\/\s*\d+(?:[.,]\d+)?\s*(?
 // 一条「进度行」的特征：带百分比、带体积，或是一串进度条字符。
 const PROGRESS_RE = /(\d{1,3}\s*%)|(\d+(?:[.,]\d+)?\s*(?:KB|MB|GB))|[▏▎▍▌▋▊▉█▓▒░#=+\-]{4,}/i
 
+// 我们自己下载的那些任务，把它们的「中断并删除残片」回调挂在这里，供取消路由调用。
+// 用模块级 Map 而不是塞进 job 对象：job 会被 JSON 序列化进 /api/jobs，函数塞进去只会污染协议。
+const downloadCancels = new Map()
+
+/**
+ * 终止整棵进程树。
+ *
+ * 只 kill 直接子进程是不够的：winget 还会拉起真正的安装器（msiexec 等），杀掉 winget 之后
+ * 那些进程会变成后台幽灵，继续写注册表和磁盘。`taskkill /T` 才是把整棵树一起带走。
+ */
+function killTree(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    try {
+      execFile('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true }, (error) => resolve(!error))
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
 function startJob(state, item, plan) {
   const job = {
     id: randomUUID().slice(0, 8),
@@ -866,6 +887,52 @@ export function apply(ctx, config) {
       if (job.status === 'running') return sendJson(res, 400, { ok: false, error: '任务仍在运行，等它结束再删' })
       state.jobs.delete(body.id)
       sendJson(res, 200, { ok: true, removed: 1, jobs: [...state.jobs.values()] })
+    })
+
+    // 取消任务。能暂停的只有我们自己下载的东西（阶段 4 接入）；托管安装器（winget/pip/npm）
+    // 只能取消，而且必须连带收拾干净：杀整棵进程树，删掉我们自己的残片。
+    register('/dsh-dev-env/api/jobs/cancel', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const job = state.jobs.get(body.id)
+      if (!job) return sendJson(res, 404, { ok: false, error: `未知的任务：${body.id}` })
+      if (job.status !== 'running') return sendJson(res, 400, { ok: false, error: '任务已经结束，不需要取消' })
+
+      job.cancelRequested = true
+      job.log.push('收到取消请求')
+
+      // ① 我们自己下载的：中断传输，并按约定删除 .part 与元数据
+      const cancelDownload = downloadCancels.get(job.id)
+      if (cancelDownload) {
+        try {
+          cancelDownload()
+          job.log.push('已中断下载，并删除未完成的残片')
+        } catch (error) {
+          job.log.push(`中断下载时出错：${String((error && error.message) || error)}`)
+        }
+      }
+
+      // ② 外部安装器：杀整棵树
+      if (job.pid) {
+        const killed = await killTree(job.pid)
+        job.log.push(killed ? `已终止进程树（PID ${job.pid}）` : `终止进程树失败（PID ${job.pid}）`)
+      }
+      for (const child of [...state.children]) {
+        if (child.pid === job.pid) {
+          try {
+            child.kill()
+          } catch {
+            /* 树已经没了 */
+          }
+        }
+      }
+
+      job.status = 'cancelled'
+      job.phase = null
+      job.endedAt = Date.now()
+      // 诚实说明清理边界：我们的残片删掉了，安装器自己的缓存删不掉。
+      job.cleanup = cancelDownload ? 'partial-removed' : 'external-cache-untouched'
+      sendJson(res, 200, { ok: true, job, jobs: [...state.jobs.values()] })
     })
 
     // 让 DSH 自己解释一个工具：把一条提问投进最近活跃的那个会话。
