@@ -272,6 +272,49 @@ One note for the machine this was developed on: `npm` needs a writable cache, an
 the default is fine. Inside it, `npm_config_cache` had to point somewhere writable, and `npm view` /
 `npm pack` failed with `EPERM` until it did.
 
+### 8. Uninstall — **done, unreleased**
+
+Added after 1.1.2 shipped, at the user's request: the detail area should be able to remove an
+installed tool, not only install one.
+
+The census that decided the shape (`tools/census-uninstall.mjs`, read-only):
+
+| route | entries |
+|---|---|
+| `winget uninstall --id` (catalog declares a winget id) | **59** |
+| `npm uninstall -g` / `pip uninstall -y` | 10 |
+| Windows' own `UninstallString` (registry probe) | 2 here, more on machines that have them |
+| **install-by-hand, no route at all** | **11** — no button offered |
+
+Two things the census changed:
+
+- **Uninstall is offered per entry, never generically.** The host computes `uninstall` per item and
+  returns `null` when there is no honest route, so the panel cannot render a dead button. The
+  install-by-hand entries (zentao, adb, junit, scoop, choco…) have no install record anywhere, and
+  deleting a folder we did not create is not a guess worth making.
+- **The command is not always what the registry says.** Ten of the 23 registry-probed entries on this
+  machine resolve to a command, and two of those are `MsiExec.exe /I{GUID}` — `/I` is install/repair,
+  so executing it from an uninstall button would repair or reinstall the product.
+  `normaliseUninstallCommand()` rewrites exactly that one form to `/X` and reports it; every other
+  shape passes through untouched.
+
+Deliberate boundaries, all of them visible in the UI rather than hidden:
+
+- **A confirmation is mandatory** and names the exact command, that it cannot be undone, and any
+  extra risk (core tool / interactive wizard / only-if-installed-that-way).
+- **The result is re-checked with the scanner's own probe**, because exit code 0 is not evidence. A
+  success the re-check contradicts becomes a failure.
+- **Interactive uninstallers cannot be tracked.** 28 of 324 registry entries have a
+  `QuietUninstallString`; the rest open a wizard of their own. Those jobs hand over, say so, and tell
+  the user to rescan — with a 15-minute kill timer so a job cannot sit in `running` forever.
+- **No agent tool for this yet.** Uninstalling is destructive enough that it should stay a deliberate,
+  confirmed human action; a `dev_env_uninstall` tool would let a model do it in one call. Add it only
+  if there is a real need, and with the same confirmation boundary.
+
+Not yet exercised by hand: an actual uninstall of a real tool. The tests cover the plan, the
+confirmation, the refusal to offer a dead button, the re-check display and the `/I` rewrite, but the
+end-to-end "click it and the tool is gone" path needs one manual pass (git is a safe candidate).
+
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).

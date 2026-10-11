@@ -7,6 +7,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Uninstall an installed tool from the panel.** The panel's first destructive action, so it is
+  deliberately conservative. `uninstall` is computed by the host per entry and is **null** when there
+  is no honest way to remove the tool — the eleven install-by-hand entries (zentao, adb, junit,
+  scoop, choco…) have no install record anywhere, so they get no button rather than a button that
+  cannot work. Where a route exists it comes from the declaration the catalog already carries:
+  `winget uninstall --id` for the 59 entries with a winget id, `npm uninstall -g` / `pip uninstall -y`
+  for the ten package entries (marked experimental, since those only work when the package really is
+  a global one), and **Windows' own `UninstallString`** for registry-probed entries — our own
+  `UninstallString` from the registry rather than one we invent.
+- **A confirmation step, because this one really deletes.** The button is red, nothing is sent until
+  the user confirms, and the confirmation names the exact command plus the risks that apply: that it
+  cannot be undone, that this is a core tool which DSH or the current project may depend on, that the
+  uninstaller will open its own window, or that the route only works if the tool was installed that
+  way. The two buttons carry distinct labels (`确认卸载` / `不卸载`) — an earlier revision used the
+  same word for both, and clicking "the confirm button" landed back on the row button that had opened
+  the panel, silently closing it.
+- **The result is re-checked, not assumed.** A process exiting 0 is not evidence that a tool is gone:
+  an interactive uninstaller often returns immediately, and `winget uninstall` can report success for
+  something winget did not install. After the job ends, the host re-runs the scanner's own probe and
+  records the verdict in `job.uninstall`, which the panel shows as either "it is no longer detected"
+  or "it is still detected, so the uninstall may not have completed" — and a success that the re-check
+  contradicts is turned into a failure.
+
+### Fixed
+
+- **`MsiExec.exe /I` in an `UninstallString` is rewritten to `/X`.** Microsoft's convention is `/X`
+  (uninstall), but `/I` (install/repair) really does appear there — MySQL Server and SQL Server
+  LocalDB on the development machine both had it. Running it as written from an uninstall button
+  would repair or reinstall the product, which is far worse than failing, so the one rewrite is
+  applied and reported in the job log rather than done silently. Every other command shape is passed
+  through untouched: guessing at an installer's arguments is what this feature refuses to do.
+
 ## [1.1.2] - 2026-10-11
 
 **The panel can now do the three things 1.1.1 could not: stop a stalled install, point the scanner at

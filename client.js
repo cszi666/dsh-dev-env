@@ -84,6 +84,19 @@ window.__ModuleLoader__.load({
       rootsFromEnv: '来自环境变量',
       rootsFromPick: '手动添加',
       rootsRemove: '移除',
+      uninstall: '卸载',
+      uninstalling: '卸载中…',
+      uninstallConfirm: '确定要从这台机器上移除它？',
+      uninstallConfirmGo: '确认卸载',
+      uninstallCancel: '不卸载',
+      uninstallWarning: '这会真的卸载它，不能撤销。',
+      uninstallEssential: '它是核心工具，DSH 或你正在做的项目可能依赖它。',
+      uninstallInteractive: '这个卸载器会打开它自己的窗口，你要在那里完成。',
+      uninstallExperimental: '只有它确实是以这种方式安装的才会成功。',
+      uninstallNoWay: '解压即用的工具没有卸载器，只能手动删除它的目录。',
+      phaseUninstall: '卸载中',
+      uninstallGone: '复查：已经探测不到它了',
+      uninstallStill: '复查：仍然能被探测到，卸载可能没有真正完成',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -152,6 +165,22 @@ window.__ModuleLoader__.load({
       rootsFromEnv: 'from the environment variable',
       rootsFromPick: 'added by hand',
       rootsRemove: 'Remove',
+      uninstall: 'Uninstall',
+      uninstalling: 'Uninstalling…',
+      uninstallConfirm: 'Remove it from this machine?',
+      // The confirming button must not read the same as the row button that opened it: two identical
+      // labels make "which one did I press" ambiguous for the user, and for anything that looks a
+      // button up by text — which is exactly how this was caught.
+      uninstallConfirmGo: 'Uninstall it',
+      uninstallCancel: 'Keep it',
+      uninstallWarning: 'This really uninstalls it, and cannot be undone.',
+      uninstallEssential: "It is a core tool — DSH or the project you are working on may depend on it.",
+      uninstallInteractive: 'This uninstaller opens its own window; finish it there.',
+      uninstallExperimental: 'Only succeeds if it was really installed that way.',
+      uninstallNoWay: 'Unpacked tools have no uninstaller — remove the folder by hand.',
+      phaseUninstall: 'Uninstalling',
+      uninstallGone: 'Re-check: it is no longer detected',
+      uninstallStill: 'Re-check: it is still detected, so the uninstall may not have completed',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -210,6 +239,12 @@ window.__ModuleLoader__.load({
 .dsh-de-btn.primary:hover:not(:disabled){color:#fff;opacity:.9}
 .dsh-de-btn.ghost{background:transparent;border-color:transparent;color:var(--dsw-alias-label-secondary);padding:4px 6px}
 .dsh-de-btn.ghost:hover{color:var(--dsw-alias-brand-primary)}
+/* 卸载是破坏性动作：红色、并且永远要经过一次确认。它不该和"复制命令"长得一样。 */
+.dsh-de-btn.danger{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);background:transparent}
+.dsh-de-btn.danger:hover:not(:disabled){background:var(--dsw-alias-state-error-primary);color:#fff}
+.dsh-de-confirm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 10px 12px;padding:8px 10px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-de-confirmtext{font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary);flex:1;min-width:200px}
+.dsh-de-confirmtext b{color:var(--dsw-alias-state-error-primary)}
 .dsh-de-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .dsh-de-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .dsh-de-chip b{color:var(--dsw-alias-label-primary);font-weight:600}
@@ -453,6 +488,11 @@ window.__ModuleLoader__.load({
       // 选完之后每个条目各自的结果：认出来了 / 缺什么。放在行下面，而不是顶部那一条全局错误里，
       // 因为用户刚在**这一行**做了选择，回执就该出现在这一行。
       const [pickResult, setPickResult] = React.useState(null)
+      // 卸载：正在等哪个条目的请求、以及哪个条目正在等二次确认。
+      // 确认状态必须落到 UI 上（而不是 window.confirm），因为它是这个面板里唯一
+      // 会真的删东西的动作，提示文案也要能带上"这是核心工具"这类上下文。
+      const [uninstalling, setUninstalling] = React.useState(null)
+      const [confirmUninstall, setConfirmUninstall] = React.useState(null)
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
@@ -683,6 +723,31 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 卸载一个已安装的工具。host 会真的执行卸载器，之后还会**复查**它是否真的消失了——
+       * 所以这里不预判成功，只把请求发出去、把任务列表拿回来，让用户去看那个任务的结论。
+       */
+      const uninstallItem = async (item) => {
+        setConfirmUninstall(null)
+        setUninstalling(item.id)
+        try {
+          const payload = await api('/uninstall', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: item.id }),
+          })
+          const jobsPayload = await api('/jobs')
+          setJobs(jobsPayload.jobs || [])
+          runningRef.current = (jobsPayload.jobs || []).filter((job) => job.status === 'running').length
+          // 直接展开这个任务的详情：用户刚按了卸载，最想看的是它到底做了什么。
+          if (payload.job?.id) setDetail(payload.job.id)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        } finally {
+          setUninstalling(null)
+        }
+      }
+
       const items = (data && data.items) || []
       const summary = (data && data.summary) || { total: 0, installed: 0, missing: 0, essentialMissing: 0 }
       const visible = items
@@ -881,7 +946,46 @@ window.__ModuleLoader__.load({
                             : null,
                         )
                       : null,
+                    // 已安装的条目才可能卸载。`item.uninstall` 由 host 在扫描时算好：
+                    // 只有真的存在可靠卸载方式时它才非 null，所以这里不会出现"按下去没反应"的按钮。
+                    item.installed && item.uninstall
+                      ? h(
+                          'div',
+                          { className: 'dsh-de-actions' },
+                          h(
+                            'button',
+                            {
+                              className: 'dsh-de-btn danger',
+                              disabled: isBusy || uninstalling === item.id,
+                              onClick: () =>
+                                setConfirmUninstall((current) => (current === item.id ? null : item.id)),
+                            },
+                            uninstalling === item.id ? t('uninstalling') : t('uninstall'),
+                          ),
+                        )
+                      : null,
                   ),
+                  // 二次确认。破坏性动作不接受"一点就删"：必须经过一次明确确认，而且确认文案
+                  // 要带上这个工具特有的风险（核心工具 / 会弹向导 / 只在某种装法下有效）。
+                  confirmUninstall === item.id
+                    ? h(
+                        'div',
+                        { className: 'dsh-de-confirm' },
+                        h(
+                          'span',
+                          { className: 'dsh-de-confirmtext' },
+                          `${t('uninstallConfirm')} `,
+                          h('b', null, itemName(item)),
+                          ` — ${t('uninstallWarning')}`,
+                          item.essential ? ` ${t('uninstallEssential')}` : '',
+                          item.uninstall.interactive ? ` ${t('uninstallInteractive')}` : '',
+                          item.uninstall.experimental ? ` ${t('uninstallExperimental')}` : '',
+                          h('code', { className: 'dsh-de-cmd', title: item.uninstall.label }, item.uninstall.label),
+                        ),
+                        h('button', { className: 'dsh-de-btn danger', onClick: () => uninstallItem(item) }, t('uninstallConfirmGo')),
+                        h('button', { className: 'dsh-de-btn', onClick: () => setConfirmUninstall(null) }, t('uninstallCancel')),
+                      )
+                    : null,
                   itemDesc(item)
                     ? h(
                         'div',
@@ -1033,6 +1137,19 @@ window.__ModuleLoader__.load({
                               : null,
                           ),
                           cleanupText(job) ? h('div', { className: 'dsh-de-msg' }, cleanupText(job)) : null,
+                          // 卸载后的复查结论。这是用户唯一能据以判断"到底卸干净没有"的东西——
+                          // 卸载器退出码 0 并不等于它真的消失了。
+                          job.uninstall
+                            ? h(
+                                'div',
+                                {
+                                  className: `dsh-de-pickmsg${job.uninstall.stillInstalled ? ' bad' : ''}`,
+                                },
+                                job.uninstall.stillInstalled
+                                  ? t('uninstallStill')
+                                  : `${t('uninstallGone')}${job.uninstall.version ? `（${job.uninstall.version}）` : ''}`,
+                              )
+                            : null,
                           job.activity ? h('div', { className: 'dsh-de-activity' }, job.activity) : null,
                           job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
                           h('div', { className: 'dsh-de-groupname' }, t('logTail')),

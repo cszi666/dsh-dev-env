@@ -469,6 +469,11 @@ export async function runClientCancelTests(harness) {
       let roots = extra.roots ?? []
       const inventory = extra.inventory ?? INVENTORY
       mock = ({ path: target, method, body }) => {
+        // Per-test POST answers, matched before the built-in routes so a test can pin one endpoint
+        // (uninstall, for instance) without replacing the whole double.
+        for (const [suffix, answer] of Object.entries(extra.postRoutes || {})) {
+          if (target.endsWith(suffix)) return answer(body)
+        }
         if (target.includes('/inventory')) return { status: 200, body: inventory }
         if (target.includes('/roots')) {
           if (method === 'DELETE') {
@@ -503,10 +508,30 @@ export async function runClientCancelTests(harness) {
       await flush()
       timers.queue.clear()
       if (!tree) throw new Error('the panel did not render')
+      if (extra.tab) {
+        // The panel opens on "Gaps", so a check about an *installed* tool must switch tabs — after
+        // the first render, which is where the tab buttons exist.
+        const tabButton = allNodes(tree).find(
+          (node) => node.type === 'button' && textOf(node).trim().startsWith(extra.tab),
+        )
+        if (!tabButton) throw new Error(`no tab labelled ${extra.tab} (have: ${buttonLabels(tree).join(' / ')})`)
+        press(tabButton)
+      }
       return tree
     }
 
     // ---------------------------------------------------------------- cases
+
+    /**
+     * The inventory payload with a single item, for the checks that care about one row.
+     * Declared before the checks that use it — a `const` further down would be a temporal dead zone,
+     * which is exactly how these first failed.
+     */
+    const inventoryWith = (item) =>
+      Object.assign({}, INVENTORY, {
+        items: [item],
+        summary: { total: 1, installed: item.installed ? 1 : 0, missing: item.installed ? 0 : 1, essentialMissing: 0 },
+      })
 
     await harness.check('a running job offers Cancel on its row, and no Delete', async () => {
       const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }))
@@ -616,7 +641,166 @@ export async function runClientCancelTests(harness) {
       if (text.includes('剩余')) throw new Error(`no ETA should be claimed, got: ${text.slice(0, 300)}`)
     })
 
-    // ------------------------------------------------------------ extra folders    // The "already installed? pick its folder" feature. Two halves matter: which rows offer the
+    // ------------------------------------------------------------ uninstall
+    // The panel's only destructive action, so it gets its own guards: who may offer it, what has to
+    // be confirmed before anything happens, and whether the re-check reaches the user.
+
+    const installedItem = (uninstall) => ({
+      id: 'git',
+      name: 'Git',
+      nameEn: 'Git',
+      category: 'language',
+      essential: true,
+      installed: true,
+      version: '2.55.0',
+      where: 'C:\\Program Files\\Git',
+      reason: null,
+      hint: null,
+      plans: [],
+      install: {},
+      uninstall,
+    })
+
+    await harness.check('only tools with a real uninstall path are offered one', async () => {
+      // `uninstall` is null for unpacked tools (zentao, adb, junit, scoop…). host decides, so the
+      // panel cannot render a button that has nothing behind it.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(installedItem(null)),
+        tab: '全部',
+      })
+      if (buttonByText(root, '卸载')) throw new Error('an unpacked tool must not offer Uninstall')
+
+      const withWay = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(
+          installedItem({
+            label: 'winget uninstall --id Git.Git -e',
+            quiet: true,
+            experimental: false,
+            interactive: false,
+            note: null,
+          }),
+        ),
+        tab: '全部',
+      })
+      if (!buttonByText(withWay, '卸载')) throw new Error('a tool with a known uninstaller should offer Uninstall')
+    })
+
+    await harness.check('Uninstall asks first, and cancel writes nothing', async () => {
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(installedItem({ label: 'winget uninstall --id Git.Git -e', quiet: true })),
+        tab: '全部',
+      })
+      clickButton(root, '卸载')
+      const text = visibleTextOf(tree)
+      if (!text.includes('确定要从这台机器上移除它？')) throw new Error(`a confirmation is required, got: ${text.slice(0, 200)}`)
+      if (!text.includes('不能撤销')) throw new Error('the warning should say it cannot be undone')
+      if (!text.includes('核心工具')) throw new Error('an essential tool must carry the extra warning')
+      if (!text.includes('winget uninstall --id Git.Git -e')) throw new Error('the exact command should be shown')
+
+      // Nothing may have been sent yet: asking is not acting.
+      const writes = fetchCalls.filter((call) => call.method !== 'GET')
+      if (writes.length) throw new Error(`confirming is required before any write, saw ${JSON.stringify(writes)}`)
+
+      clickButton(tree, '不卸载')
+      if (visibleTextOf(tree).includes('确定要从这台机器上移除它？')) throw new Error('cancel should close the confirmation')
+      const after = fetchCalls.filter((call) => call.method !== 'GET')
+      if (after.length) throw new Error('cancel must not write anything')
+    })
+
+    await harness.check('confirming posts the id and opens the job it created', async () => {
+      const uninstallJob = {
+        id: 'un1',
+        itemId: 'git',
+        name: 'Git',
+        mode: 'uninstall',
+        label: 'winget uninstall --id Git.Git -e',
+        status: 'running',
+        phase: 'uninstall',
+        percent: null,
+        startedAt: timers.now,
+        endedAt: null,
+        log: ['卸载方式：winget uninstall --id Git.Git -e'],
+      }
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(installedItem({ label: 'winget uninstall --id Git.Git -e', quiet: true })),
+        postRoutes: {
+          '/api/uninstall': () => ({ status: 200, body: { ok: true, job: uninstallJob } }),
+          '/api/jobs': () => ({ status: 200, body: { ok: true, jobs: [uninstallJob] } }),
+        },
+        tab: '全部',
+      })
+      clickButton(root, '卸载')
+      // The confirming button carries its own label. An earlier version reused "卸载" for both, and
+      // the second click landed back on the row button that had opened the panel — the confirmation
+      // silently closed instead of running. Two identical labels on one screen is the bug, not the
+      // test's lookup.
+      clickButton(tree, '确认卸载')
+      await flush()
+
+      const posts = fetchCalls.filter((call) => call.path.endsWith('/api/uninstall'))
+      if (posts.length !== 1) {
+        throw new Error(
+          `expected one uninstall POST, got ${posts.length}; ` +
+            `calls: [${fetchCalls.map((c) => `${c.method} ${c.path}`).join(' | ')}]; ` +
+            `pending=${pending.length}; text=${textOf(tree).replace(/\s+/g, ' ').slice(0, 200)}`,
+        )
+      }
+      if (posts[0].method !== 'POST') throw new Error(`expected POST, got ${posts[0].method}`)
+      if (posts[0].body.id !== 'git') throw new Error(`posted id ${JSON.stringify(posts[0].body.id)}`)
+      const text = visibleTextOf(tree)
+      if (!text.includes('卸载中')) throw new Error(`the job should read 卸载中, got: ${text.slice(0, 220)}`)
+    })
+
+    await harness.check('the post-uninstall re-check reaches the user, both ways', async () => {
+      // The uninstaller exiting 0 is not evidence. host re-probes and says what it found, and that
+      // verdict is the whole reason the button can be trusted.
+      const settled = (uninstall) => ({
+        id: 'un2',
+        itemId: 'git',
+        name: 'Git',
+        mode: 'uninstall',
+        label: 'winget uninstall --id Git.Git -e',
+        status: 'succeeded',
+        phase: 'done',
+        startedAt: timers.now - 5000,
+        endedAt: timers.now,
+        log: ['卸载方式：winget uninstall --id Git.Git -e', '复查：已经探测不到这个工具了'],
+        uninstall,
+      })
+
+      const gone = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(installedItem({ label: 'winget uninstall --id Git.Git -e', quiet: true })),
+        postRoutes: {
+          '/api/uninstall': () => ({ status: 200, body: { ok: true, job: settled({ stillInstalled: false }) } }),
+          '/api/jobs': () => ({ status: 200, body: { ok: true, jobs: [settled({ stillInstalled: false })] } }),
+        },
+        tab: '全部',
+      })
+      clickButton(gone, '卸载')
+      clickButton(tree, '确认卸载')
+      await flush()
+      if (!visibleTextOf(tree).includes('复查：已经探测不到它了')) {
+        throw new Error(`the clearance should be shown, got: ${visibleTextOf(tree).slice(0, 240)}`)
+      }
+
+      const still = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(installedItem({ label: 'winget uninstall --id Git.Git -e', quiet: true })),
+        postRoutes: {
+          '/api/uninstall': () => ({ status: 200, body: { ok: true, job: settled({ stillInstalled: true }) } }),
+          '/api/jobs': () => ({ status: 200, body: { ok: true, jobs: [settled({ stillInstalled: true })] } }),
+        },
+        tab: '全部',
+      })
+      clickButton(still, '卸载')
+      clickButton(tree, '确认卸载')
+      await flush()
+      if (!visibleTextOf(tree).includes('仍然能被探测到')) {
+        throw new Error(`a failed uninstall must not look successful, got: ${visibleTextOf(tree).slice(0, 240)}`)
+      }
+    })
+
+    // ------------------------------------------------------------ extra folders
+    // The "already installed? pick its folder" feature. Two halves matter: which rows offer the
     // picker at all, and what the user is told after choosing.
 
     const PICK_LABEL = '📁 已经安装？选择对应文件夹'
@@ -634,7 +818,6 @@ export async function runClientCancelTests(harness) {
       plans: [{ mode: 'winget', label: 'winget install --id Apache.JMeter -e', url: null, note: null }],
       install: {},
     })
-    const inventoryWith = (item) => Object.assign({}, INVENTORY, { items: [item], summary: { total: 1, installed: 0, missing: 1, essentialMissing: 1 } })
 
     await harness.check('the folder picker is offered only where a folder could identify the tool', async () => {
       // `hint` non-null means a pathList probe, which is the only kind a picked folder can satisfy.

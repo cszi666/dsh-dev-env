@@ -759,6 +759,56 @@ check('cancelling a download deletes the partial file and its metadata', async (
   }
 })
 
+// ------------------------------------------------------------------ uninstall
+console.log('\nuninstall')
+
+check('an MSI UninstallString that says /I is rewritten to /X', () => {
+  // Microsoft's own convention is /X, but /I (install/repair) really does appear in UninstallString:
+  // MySQL and SQL Server LocalDB on the development machine both had it. Running /I from an uninstall
+  // button would repair or reinstall the product, which is worse than failing.
+  const cases = [
+    ['MsiExec.exe /I{17796717-E924-4198-BC42-BE20338FADA2}', 'MsiExec.exe /X{17796717-E924-4198-BC42-BE20338FADA2}'],
+    ['MsiExec.exe /i {E5B3A478-C4C3-49E3-8384-A12D4B2008D4}', 'MsiExec.exe /X {E5B3A478-C4C3-49E3-8384-A12D4B2008D4}'],
+    ['msiexec /I "C:\\pkg\\thing.msi"', 'msiexec /X "C:\\pkg\\thing.msi"'],
+  ]
+  for (const [input, expected] of cases) {
+    const { command, adjusted } = __test.normaliseUninstallCommand(input)
+    assert(command === expected, `expected ${expected}, got ${command}`)
+    assert(adjusted, 'a rewrite must be reported, not applied silently')
+  }
+})
+
+check('a normal uninstaller is passed through untouched', () => {
+  // Only the /I case may be rewritten. Rewriting anything else would be guessing at an installer's
+  // arguments, which is what this feature refuses to do everywhere else.
+  for (const input of [
+    'MsiExec.exe /X{17796717-E924-4198-BC42-BE20338FADA2}',
+    '"C:\\Program Files\\Git\\unins000.exe" /SILENT',
+    'D:\\android\\uninstall.exe',
+    '"D:\\Tomcat\\Uninstall.exe" -ServiceName="Tomcat11"',
+    '"C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\setup.exe" uninstall --installPath "D:\\C#"',
+  ]) {
+    const { command, adjusted } = __test.normaliseUninstallCommand(input)
+    assert(command === input, `must not touch ${input}, got ${command}`)
+    assert(adjusted === null, `must not report an adjustment for ${input}`)
+  }
+})
+
+check('install-by-hand tools carry no uninstall route at all', () => {
+  // These have no install record anywhere, so there is nothing honest to run. host returns null for
+  // them and the panel renders no button; this pins that at the source, so a future catalog edit that
+  // gives one of them a package-manager route is forced to revisit the uninstall rule too.
+  for (const id of ['zentao', 'adb', 'junit', 'scoop', 'choco']) {
+    const entry = CATALOG.find((row) => row.id === id)
+    assert(entry, `${id} should be in the catalog`)
+    const install = entry.install || {}
+    assert(!install.winget && !install.npm && !install.pip,
+      `${id} is expected to be install-by-hand; it now has a package-manager route, so revisit uninstall`)
+    assert(entry.probe?.kind !== 'registry',
+      `${id} unexpectedly probes the registry, which would give it an uninstall route`)
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

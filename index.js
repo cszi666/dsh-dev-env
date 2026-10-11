@@ -562,28 +562,46 @@ async function scan(state, options = {}) {
       })
       await Promise.all(workers)
 
-      const items = CATALOG.map((entry, index) => {
-        const result = results[index] ?? missing('未探测')
-        return {
-          id: entry.id,
-          name: entry.name,
-          nameEn: entry.nameEn ?? null,
-          desc: DESCRIPTIONS[entry.id]?.zh ?? null,
-          descEn: DESCRIPTIONS[entry.id]?.en ?? null,
-          category: entry.category,
-          essential: entry.essential === true,
-          installed: result.installed,
-          version: result.version,
-          where: result.where,
-          reason: result.reason,
-          debug: result.installed ? null : result.debug ?? null,
-          // 认这个工具需要什么，由它自己的探测声明生成；非 pathList 条目是 null，
-          // 面板据此决定"选文件夹"这个入口显不显示（对注册表/PATH 类条目它毫无用处）。
-          hint: describeProbeHint(entry),
-          install: entry.install ?? {},
-          plans: plansFor(entry).map((plan) => ({ mode: plan.mode, label: plan.label, url: plan.url ?? null, note: plan.note ?? null })),
-        }
-      })
+      const items = await Promise.all(
+        CATALOG.map(async (entry, index) => {
+          const result = results[index] ?? missing('未探测')
+          const base = {
+            id: entry.id,
+            name: entry.name,
+            nameEn: entry.nameEn ?? null,
+            desc: DESCRIPTIONS[entry.id]?.zh ?? null,
+            descEn: DESCRIPTIONS[entry.id]?.en ?? null,
+            category: entry.category,
+            essential: entry.essential === true,
+            installed: result.installed,
+            version: result.version,
+            where: result.where,
+            reason: result.reason,
+            debug: result.installed ? null : result.debug ?? null,
+            // 认这个工具需要什么，由它自己的探测声明生成；非 pathList 条目是 null，
+            // 面板据此决定"选文件夹"这个入口显不显示（对注册表/PATH 类条目它毫无用处）。
+            hint: describeProbeHint(entry),
+            install: entry.install ?? {},
+            plans: plansFor(entry).map((plan) => ({ mode: plan.mode, label: plan.label, url: plan.url ?? null, note: plan.note ?? null })),
+          }
+          // 卸载方式只对**已安装**的条目计算，而且只在真有时才给：面板因此不需要自己判断
+          // "这个工具能不能卸"，也就不会出现按下去没反应的按钮。registry 类型要读注册表，
+          // 所以这里是异步的。
+          const plan = await uninstallPlanFor(state, { id: entry.id, installed: result.installed })
+          return {
+            ...base,
+            uninstall: plan
+              ? {
+                  label: plan.label,
+                  quiet: plan.quiet === true,
+                  experimental: plan.experimental === true,
+                  interactive: plan.interactive === true,
+                  note: plan.note ?? null,
+                }
+              : null,
+          }
+        }),
+      )
 
       const missingItems = items.filter((item) => !item.installed)
       const value = {
@@ -774,6 +792,9 @@ const PHASE_RULES = [
   { id: 'done', re: /成功|已完成|已安装|完成安装|Successfully|installed|Done\b/i },
   { id: 'verify', re: /验证|哈希|校验|Verifying|hash|checksum/i },
   { id: 'download', re: /下载|Downloading|Downloaded|Fetching|Getting/i },
+  // 卸载要排在 install 之前：很多卸载器会打印"正在移除 xxx"，而"移除"和"安装"的中英关键词
+  // 并不重叠，但顺序明确比依赖措辞更可靠。
+  { id: 'uninstall', re: /卸载|移除|Uninstalling|Uninstalled|Removing|Removed/i },
   { id: 'install', re: /安装|解压|配置|Installing|Extracting|Configuring|Building/i },
 ]
 const PERCENT_RE = /(\d{1,3})\s*%/
@@ -800,6 +821,136 @@ function killTree(pid) {
       resolve(false)
     }
   })
+}
+
+/**
+ * 卸载跑完后复查：这个条目现在还装不装。结论写进 job.uninstall 供面板显示。
+ *
+ * 复查用**扫描时同一个探针**（probeItem），因为面板下一次刷新显示的就是它的结论——
+ * 用任何别的判断都可能出现"任务说卸载成功、清单里还在"这种自相矛盾。
+ */
+async function verifyUninstall(state, item, job) {
+  try {
+    const entry = CATALOG.find((row) => row.id === item.id)
+    if (!entry) return
+    const after = await probeItem(entry, state)
+    job.uninstall = { stillInstalled: after.installed === true, version: after.version ?? null }
+    if (after.installed) {
+      job.log.push('复查：这个工具**仍然被探测到**，卸载可能没有真正完成')
+      if (job.status === 'succeeded') {
+        job.status = 'failed'
+        job.error = job.error ?? '卸载命令返回成功，但复查时这个工具仍然存在'
+      }
+    } else {
+      job.log.push('复查：已经探测不到这个工具了')
+      if (job.status === 'succeeded') job.log.push('卸载完成')
+      // 卸载会改变 PATH 与注册表，下一次扫描必须重新读
+      pathCache.clear()
+      state.cache = null
+      state.registry = null
+      state.registryPromise = null
+    }
+  } catch (error) {
+    job.log.push(`复查失败：${String((error && error.message) || error)}`)
+  }
+}
+
+/**
+ * 修正注册表里"说是卸载、其实是安装"的命令。
+ *
+ * Windows 的惯例是 `MsiExec.exe /X{GUID}`，但把 `/I`（安装/修复）写进 `UninstallString` 是实际
+ * 存在的（这台机器上 MySQL 和 SQL Server LocalDB 都是 `/I`）。照原样执行的话，用户点"卸载"
+ * 会触发**修复或重装**——这是个危险的反向操作，比"卸载失败"糟得多。
+ *
+ * 只做这一处改写：把 MSI 的 `/I` 换成 `/X`。其他形态保持原样，并且如实标注我们改了它。
+ */
+function normaliseUninstallCommand(command) {
+  const text = String(command)
+  if (!/\bmsiexec(\.exe)?\b/i.test(text)) return { command: text, adjusted: null }
+  const rewritten = text.replace(
+    /(^|\s)\/I(\s*\{|\s*"[^"]*\.msi"|\s*$)/i,
+    (_all, before, after) => `${before}/X${after}`,
+  )
+  if (rewritten === text) return { command: text, adjusted: null }
+  return { command: rewritten, adjusted: '注册表里写的是 /I（安装），已改写为 /X（卸载）' }
+}
+
+/**
+ * 这个条目怎么卸载。返回 null 表示**没有可靠的卸载方式**——那就一个按钮也不给。
+ *
+ * Windows 没有通用卸载，所以分三种来源，且都不靠猜：
+ *   · winget 声明 → `winget uninstall --id <id>`，托管安装器的反向操作
+ *   · npm / pip 声明 → 对应的 uninstall，但只对"全局包"成立，所以标 experimental
+ *   · registry 探针 → 用 **Windows 自己的 UninstallString**，有 QuietUninstallString 才可能静默；
+ *     没有的话会弹出交互式向导，而我们追踪不到它的完成
+ *
+ * 只靠路径探测的条目（解压即用：zentao / adb / junit / scoop…）一律 null：我们没有它们的安装
+ * 记录，也不知道用户是不是自己解压的，直接删目录是不可接受的猜测。
+ */
+async function uninstallPlanFor(state, item) {
+  const entry = CATALOG.find((row) => row.id === item.id)
+  if (!entry || !item.installed) return null
+  const install = entry.install || {}
+
+  if (install.winget && process.platform === 'win32') {
+    return {
+      mode: 'uninstall',
+      label: `winget uninstall --id ${install.winget} -e`,
+      argv: ['winget', 'uninstall', '--id', install.winget, '-e', '--accept-source-agreements', '--disable-interactivity'],
+      quiet: true,
+      note: null,
+    }
+  }
+  if (install.npm) {
+    return {
+      mode: 'uninstall',
+      label: `npm uninstall -g ${install.npm}`,
+      argv: ['npm', 'uninstall', '-g', install.npm],
+      quiet: true,
+      experimental: true,
+      note: '只在这个全局包确实存在时有效',
+    }
+  }
+  if (install.pip) {
+    return {
+      mode: 'uninstall',
+      label: `python -m pip uninstall -y ${install.pip}`,
+      argv: ['python', '-m', 'pip', 'uninstall', '-y', install.pip],
+      quiet: true,
+      experimental: true,
+      note: '只在这个全局包确实存在时有效',
+    }
+  }
+
+  if (entry.probe?.kind === 'registry') {
+    let re
+    try {
+      re = new RegExp(entry.probe.match, 'i')
+    } catch {
+      return null
+    }
+    const index = await registryIndex(state)
+    const hit = index.find((row) => re.test(row.DisplayName))
+    const raw = hit?.QuietUninstallString || hit?.UninstallString
+    if (!raw) return null
+    const { command, adjusted } = normaliseUninstallCommand(raw)
+    // `argv` 用**完整**命令（截断一条命令行等于执行错误的命令），只把 label 收短供显示。
+    return {
+      mode: 'uninstall',
+      label: command.length > 300 ? `${command.slice(0, 297)}…` : command,
+      argv: ['cmd.exe', '/d', '/s', '/c', command],
+      // 交互式卸载器会开自己的窗口，可能比一次静默卸载久得多；给一个宽上限，避免任务永远挂着。
+      timeoutMs: 15 * 60_000,
+      quiet: Boolean(hit.QuietUninstallString),
+      interactive: !hit.QuietUninstallString,
+      note: [
+        adjusted,
+        hit.QuietUninstallString ? null : '会弹出卸载向导；完成后请重新扫描确认',
+      ].filter(Boolean).join('；') || null,
+    }
+  }
+
+  return null
 }
 
 /**
@@ -972,6 +1123,13 @@ function startJob(state, item, plan) {
     return job
   }
 
+  if (plan.mode === 'uninstall') {
+    job.phase = 'uninstall'
+    job.log.push(`卸载方式：${plan.label}`)
+    if (plan.note) job.log.push(plan.note)
+    if (plan.interactive) job.log.push('这个卸载器会打开自己的窗口，我们只能把它拉起来，无法追踪它何时结束')
+  }
+
   const push = (chunk) => {
     // 按 \r 也切开，并把 ANSI 控制序列剥掉，否则进度条会在日志里显示成乱码。
     for (const raw of String(chunk).split(/\r\n|\r|\n/)) {
@@ -1018,19 +1176,38 @@ function startJob(state, item, plan) {
   state.children.add(child)
   if (child.stdout) child.stdout.on('data', push)
   if (child.stderr) child.stderr.on('data', push)
+  // `spawn` 没有 execFile 的 timeout 选项，所以超时要自己实现。交互式卸载器可能弹出窗口后
+  // 一直挂着，没有上限的话任务会永远停在"运行中"。killTree 带走整棵树，避免只杀外壳。
+  const killTimer = plan.timeoutMs
+    ? setTimeout(() => {
+        job.log.push(`超过 ${Math.round(plan.timeoutMs / 60000)} 分钟仍未结束，已终止`)
+        killTree(child.pid).catch(() => {})
+      }, plan.timeoutMs)
+    : null
+  const clearKillTimer = () => {
+    if (killTimer) clearTimeout(killTimer)
+  }
   child.on('error', (error) => {
+    clearKillTimer()
     state.children.delete(child)
     job.status = 'failed'
     job.error = String((error && error.message) || error)
     job.endedAt = Date.now()
   })
   child.on('close', (code) => {
+    clearKillTimer()
     state.children.delete(child)
     if (job.status === 'running') {
       job.exitCode = code
       job.status = code === 0 ? 'succeeded' : 'failed'
       job.endedAt = Date.now()
-      if (code !== 0) job.error = `安装进程退出码 ${code}`
+      if (code !== 0) {
+        job.error = plan.mode === 'uninstall' ? `卸载进程退出码 ${code}` : `安装进程退出码 ${code}`
+      }
+      // 卸载之后要**复查**，不能只看退出码：交互式卸载器往往立刻返回 0 而实际什么都没做，
+      // 而 winget 卸载一个不是它装的工具也可能报成功。复查走的是扫描用的同一个探针，
+      // 所以结论就是面板下一次会显示的那个。
+      if (plan.mode === 'uninstall') verifyUninstall(state, item, job)
     }
     // 装完之后立刻重读 PATH，这样面板下一次刷新就能看到新工具
     if (code === 0) refreshPath(true).catch(() => {})
@@ -1213,6 +1390,26 @@ export function apply(ctx, config) {
       if (!plan) return sendJson(res, 400, { ok: false, error: `没有可用的安装方案（${body.mode || 'auto'}）` })
       const job = startJob(state, item, plan)
       sendJson(res, 200, { ok: true, job, plans: item.plans })
+    })
+
+    register('/dsh-dev-env/api/uninstall', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const data = await scan(state)
+      const item = data.items.find((entry) => entry.id === body.id)
+      if (!item) return sendJson(res, 404, { ok: false, error: `未知的条目：${body.id}` })
+      if (!item.installed) return sendJson(res, 400, { ok: false, error: '这个工具没有被探测到，无需卸载' })
+      // 面板只有在 uninstall 非 null 时才显示按钮；这里仍然重算一次，因为状态可能已经变了
+      // （比如用户刚装了某个工具，或者某个注册表项消失了）。
+      const plan = await uninstallPlanFor(state, item)
+      if (!plan) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: '这个工具没有可靠的卸载方式（多半是解压即用的，我们没有它的安装记录）',
+        })
+      }
+      const job = startJob(state, item, plan)
+      sendJson(res, 200, { ok: true, job })
     })
 
     register('/dsh-dev-env/api/open', async (req, res) => {
@@ -1546,6 +1743,7 @@ export const __test = {
   probeAtDir,
   scanRoots,
   rootsView,
+  normaliseUninstallCommand,
 }
 
 // ----------------------------------------------------------------- http helpers
