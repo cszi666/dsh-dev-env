@@ -41,7 +41,7 @@ import {
 } from '../paths.js'
 import { describeProbeHint } from '../roots.js'
 import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt } from '../handoff.js'
-import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView } from '../settings.js'
+import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView, SETTING_DEFS } from '../settings.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
 
@@ -1153,9 +1153,10 @@ check('settings fall back to defaults, and reject values of the wrong type', () 
   // possibility. `'false'` is truthy in JS, so accepting it silently would flip a setting while looking
   // like it had been applied — so the file is normalised rather than trusted.
   const defaults = defaultSettings()
-  assert(Object.keys(defaults).length >= 4, `expected several settings, got ${Object.keys(defaults).length}`)
+  assert(Object.keys(defaults).length >= 5, `expected several settings, got ${Object.keys(defaults).length}`)
   for (const [key, value] of Object.entries(defaults)) {
-    assert(typeof value === 'boolean', `${key} should default to a boolean, got ${typeof value}`)
+    const kind = typeof value
+    assert(kind === 'boolean' || kind === 'string', `${key} should default to a boolean or a string, got ${kind}`)
   }
 
   const normalised = normaliseSettings({
@@ -1176,6 +1177,35 @@ check('settings fall back to defaults, and reject values of the wrong type', () 
     const row = normaliseSettings(junk)
     assert(row['download.preferOfficial'] === true, `${JSON.stringify(junk)} should fall back to the default`)
   }
+})
+
+check('an enum setting only accepts its listed values, and defaults to "current"', () => {
+  // A misspelled enum is not cosmetic: the value selects HOW an entire conversation gets summarised, so
+  // silently falling through to some other branch would spend the user's context the way they did not
+  // ask for. Anything unrecognised must land on the default instead.
+  const def = SETTING_DEFS.find((row) => row.key === 'handoff.autoFillMethod')
+  assert(def, 'handoff.autoFillMethod should exist')
+  assert(def.type === 'enum' && Array.isArray(def.values), 'it should be an enum with listed values')
+  assert(def.default === 'current', 'the default is the current-conversation method')
+
+  assert(normaliseSettings({ 'handoff.autoFillMethod': 'compact' })['handoff.autoFillMethod'] === 'compact')
+  assert(normaliseSettings({ 'handoff.autoFillMethod': 'current' })['handoff.autoFillMethod'] === 'current')
+  for (const bad of ['Compact', 'COMPACT', 'other', '', 1, null, true, {}]) {
+    const got = normaliseSettings({ 'handoff.autoFillMethod': bad })['handoff.autoFillMethod']
+    assert(got === 'current', `${JSON.stringify(bad)} should fall back to current, got ${JSON.stringify(got)}`)
+  }
+  // The setting must be reachable from the settings page, which is the only place a user can change it.
+  const items = settingsView(null, 'zh').groups.flatMap((group) => group.items)
+  const shown = items.find((row) => row.key === 'handoff.autoFillMethod')
+  assert(shown, 'the fill method must appear on the settings page')
+  assert(shown.value === 'current', 'the page should show the default')
+  // The candidate values must reach the page: a select with no options is a control that exists and
+  // cannot be used, which is worse than no control. This was missing on the first pass.
+  assert(Array.isArray(shown.values) && shown.values.length === 2,
+    `the enum's values must be projected to the page, got ${JSON.stringify(shown.values)}`)
+  assert(shown.values.includes('current') && shown.values.includes('compact'), 'both methods must be offered')
+  // Its explanation has to state the side effect of the other option, since that is the whole tradeoff.
+  assert(/压缩|compact/i.test(shown.why) && /current/i.test(shown.why), 'the explanation must name both methods')
 })
 
 check('settings round-trip through a file, and a corrupt file falls back', () => {
@@ -1202,8 +1232,13 @@ check('settings round-trip through a file, and a corrupt file falls back', () =>
     assert(items.length === Object.keys(defaults).length, 'every setting should appear exactly once')
     for (const item of items) {
       assert(item.label && item.why, `${item.key} needs a label and a why`)
-      assert(typeof item.value === 'boolean', `${item.key} should carry its current value`)
-      assert(typeof item.default === 'boolean', `${item.key} should carry its default`)
+      // Assert against the declared type rather than "everything is a boolean": the enum setting made
+      // that assumption wrong, and the guard should describe the rule, not today's inventory.
+      const def = SETTING_DEFS.find((row) => row.key === item.key)
+      assert(def, `${item.key} should have a definition`)
+      assert(typeof item.value === typeof def.default, `${item.key} should carry a ${typeof def.default} value`)
+      assert(item.type === def.type, `${item.key} should report its type (${def.type})`)
+      assert(typeof item.default === typeof def.default, `${item.key} should carry its default`)
     }
     const en = settingsView(file, 'en')
     for (const item of en.groups.flatMap((group) => group.items)) {

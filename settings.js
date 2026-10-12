@@ -34,6 +34,18 @@ export const SETTING_DEFS = [
     },
   },
   {
+    key: 'handoff.autoFillMethod',
+    type: 'enum',
+    values: ['current', 'compact'],
+    default: 'current',
+    group: 'handoff',
+    label: { zh: '一键填充的方式', en: 'How one-click fill works' },
+    why: {
+      zh: '"current"：把对话内容交给**当前对话的模型**总结。最准，但会占用你正缺的上下文。"compact"：改用 **DSH 的压缩服务**另起一次总结，不占用当前对话——但按它的契约，它会**就地改写这段对话的历史**（把一段消息替换成一个摘要节点），所以它是顺带压缩了对话，而不只是产出一份能带走的记录。默认 current。',
+      en: '"current" hands the conversation to the **current model** to summarise: most accurate, but it spends the context you are short of. "compact" uses **DSH\'s compaction service** instead, which does not spend the current conversation — but by its contract it **rewrites that conversation\'s history in place** (a span of messages becomes one summary node), so it compacts as a side effect rather than only producing a portable record. Defaults to current.',
+    },
+  },
+  {
     key: 'handoff.tagOnGenerate',
     type: 'boolean',
     default: false,
@@ -85,6 +97,10 @@ export function normaliseSettings(input) {
       if (typeof value === 'string') out[def.key] = value
     } else if (def.type === 'number') {
       if (typeof value === 'number' && Number.isFinite(value)) out[def.key] = value
+    } else if (def.type === 'enum') {
+      // 只接受清单里的值。一个拼错的枚举会静默走错分支，而"走错分支"在这里意味着用错的方式去总结
+      // 整段对话——所以宁可回落到默认值。
+      if (typeof value === 'string' && def.values.includes(value)) out[def.key] = value
     }
   }
   return out
@@ -131,6 +147,9 @@ export function settingsView(file, lang) {
       items: SETTING_DEFS.filter((def) => def.group === group.id).map((def) => ({
         key: def.key,
         type: def.type,
+        // enum 的候选值必须一起带出去：面板只渲染 host 给它的东西，拿不到 values 的下拉是空的
+        // ——那是一个"存在但用不了"的控件，比没有更糟。
+        values: def.values ?? null,
         value: current[def.key],
         default: def.default,
         label: english ? def.label.en : def.label.zh,

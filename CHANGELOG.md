@@ -28,12 +28,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **A settings page for the plugin's own defaults**, registered at `settings.section` with its own id, so
-  it joins `account` / `general` / `models` / `plugins` / `agent-presets` instead of replacing any of them.
+- **A settings page for the plugin's own defaults**, registered at `settings.section` with its own id, so  it joins `account` / `general` / `models` / `plugins` / `agent-presets` instead of replacing any of them.
   Each row states what the setting *changes* rather than only its name, because a switch whose effect
   cannot be stated is worse than no switch. Saving is explicit and takes effect immediately — no restart —
   and the page re-renders from the values the host **read back** rather than the ones submitted, so a
   value rejected as the wrong type is visible instead of looking accepted.
+  - `handoff.autoFillMethod` chooses how one-click fill summarises a conversation, defaulting to
+    `current` as requested. `current` hands the content to this conversation's model: most accurate, but
+    it spends exactly the context the user is short of. `compact` uses DSH's compaction service instead
+    and does not spend the current conversation — but that service's contract is to **rewrite the
+    conversation's history in place**, replacing a span of messages with one summary node, so it compacts
+    as a side effect rather than only producing a portable record. The setting's explanation states that
+    consequence outright, because a choice whose cost is hidden is not really a choice.
   - `download.preferOfficial` is not decorative: it is the one place a preference changes behaviour. With
     it off, an install that names no source picks a verified domestic mirror instead of the official
     origin — the difference between a download progressing and crawling when the origin is slow.

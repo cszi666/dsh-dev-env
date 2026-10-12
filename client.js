@@ -145,6 +145,8 @@ window.__ModuleLoader__.load({
       settingsIntro: '这些是默认行为。每一项都写明它会改变什么；改动保存后立即生效，不需要重启。',
       settingsSave: '保存设置',
       settingsSaved: '已保存',
+      methodCurrent: '用当前对话总结（默认）',
+      methodCompact: '用 DSH 压缩服务总结（会就地压缩这段对话）',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -269,6 +271,8 @@ window.__ModuleLoader__.load({
       settingsIntro: 'These are defaults. Each one says what it changes; saving takes effect immediately, with no restart.',
       settingsSave: 'Save settings',
       settingsSaved: 'Saved',
+      methodCurrent: 'Summarise in this conversation (default)',
+      methodCompact: 'Use DSH compaction (which rewrites this conversation)',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -795,16 +799,34 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dsh-de-setrow', key: item.key },
-                h(
-                  'label',
-                  { className: 'dsh-de-setlabel' },
-                  h('input', {
-                    type: 'checkbox',
-                    checked: Boolean(view.values[item.key]),
-                    onChange: (event) => set(item.key, event.target.checked),
-                  }),
-                  h('span', null, item.label),
-                ),
+                // enum 用下拉、布尔用复选框：把"二选一"画成勾选框会让人以为可以都不选。
+                item.type === 'enum'
+                  ? h(
+                      'label',
+                      { className: 'dsh-de-setlabel' },
+                      h(
+                        'select',
+                        {
+                          className: 'dsh-de-setselect',
+                          value: view.values[item.key],
+                          onChange: (event) => set(item.key, event.target.value),
+                        },
+                        (item.values || []).map((value) =>
+                          h('option', { value, key: value }, t(value === 'compact' ? 'methodCompact' : 'methodCurrent')),
+                        ),
+                      ),
+                      h('span', null, item.label),
+                    )
+                  : h(
+                      'label',
+                      { className: 'dsh-de-setlabel' },
+                      h('input', {
+                        type: 'checkbox',
+                        checked: Boolean(view.values[item.key]),
+                        onChange: (event) => set(item.key, event.target.checked),
+                      }),
+                      h('span', null, item.label),
+                    ),
                 h('div', { className: 'dsh-de-setwhy' }, item.why),
                 h('div', { className: 'dsh-de-setkey' }, item.key),
               ),
