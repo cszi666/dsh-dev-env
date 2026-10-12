@@ -9,6 +9,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A 交接 (Handover) tab beside 对话 and 轨迹, holding the lean state of the work.** A conversation
+  always runs out of room eventually, and continuing in a new one needs the *state of the task* — what is
+  left, what is in progress, what is done, what comes next — rather than a transcript, which is long and
+  mostly noise. The tab stores that as a small structured record per conversation, deliberately bounded
+  so it stays readable when it is read into the *beginning* of the next conversation, where a long
+  handover would crowd out the room it is meant to save.
+  - It is keyed by session, which is what makes it a multi-conversation feature rather than a global
+    note: a new conversation starts with an empty handover because it has not done anything yet, while
+    the old one stays readable for whoever picks the work up.
+  - **投给当前对话** renders the record as the opening prompt of another conversation and injects it
+    there, and the text tells the reader not to re-derive what is already listed as done — the specific
+    failure a handover exists to prevent.
+  - The tab lives at `conversation.view` (the seat whose occupants are exactly `chat` and `trajectory`)
+    because that seat is **session-scoped** and supplies a session identity, while the plugin's own
+    `main/dev-env` seat supplies none. Registering an id of our own adds a tab beside the shipped two
+    instead of replacing either.
 - **Hand a task list to a conversation, and choose which one.** The job list is the unified progress
   view; this is the passing. **交接给对话** in the jobs header reads the visible sessions and offers them
   by working directory, newest activity first, showing only the ones that can actually accept a prompt

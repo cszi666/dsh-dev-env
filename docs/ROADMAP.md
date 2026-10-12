@@ -439,6 +439,47 @@ Not yet exercised by hand: the round trip into a *second* conversation. The earl
 version was verified by hand, and the tests cover the choice being honoured, the id being omitted for
 "current", an unusable session not being offered, and both directions of the empty case.
 
+### 13. A 交接 tab inside the conversation — **built; runtime shape not yet confirmed**
+
+Requested as a UI placed where 对话/轨迹 sit (a screenshot of that tab row), holding the lean version of
+the work so a conversation that hits its limit can be continued seamlessly in another one.
+
+The slot tree settled where it has to live. `conversation.view` is a list slot whose occupants are
+exactly `chat` (order 0) and `trajectory` (order 10) — the two tabs in the screenshot — and its catalog
+reports `slotInject` available, `replaceRisk: none`, and a `standardProps` list containing
+**`sessionId: SessionId`**. The plugin's existing seat, `main/dev-env`, has **no** session binding (its
+`standardProps` list has no `sessionId`), so the handover could not be built there: it must know which
+conversation it belongs to. The registration form came from the shipped source in `app.asar` rather than
+from guesswork:
+
+```js
+ctx.slots.inject('conversation.view', () => ctx.slots.register(
+  { name: 'conversation.view', id: 'my-entry', order: 100, label: 'My entry' },
+  () => React.createElement('div', null, 'hello'),
+))
+```
+
+A fresh `id` lands beside the shipped entries; reusing one would *replace* it, which is why the id is
+`dev-env-handoff` and not `chat`.
+
+**The one thing still unverified is where the session identity arrives.** `materializeStandardBinding`
+builds a `standard` object from `{...binding.props}` plus each hook under `standardHookPropName(name)`
+(`use` + capitalised name, so `session` → `useSession`), which strongly suggests `props.standard.sessionId`
+and `props.standard.useSession()`. That was not confirmed in the shipped code, and writing a handover to
+the **wrong** conversation is worse than writing none — so `sessionIdFrom()` tries
+`standard.sessionId`, then `props.sessionId`, then `standard.useSession()`, and if none is a usable
+string the tab says it cannot read the identity **instead of guessing**. The view also logs its actual
+prop keys once on mount, so a single restart settles the question; if the shape differs, only
+`sessionIdFrom()` changes.
+
+Stored per session at `<profile>/dsh-dev-env/handoffs.json` (`handoffsFile()`), through
+`GET`/`POST /dsh-dev-env/api/handoff` and `POST /dsh-dev-env/api/handoff/send`, which renders the record
+with `handoffPrompt()` and injects it into the target conversation. That last step reuses `askDsh()`, so
+"continue in another conversation" needed no new delivery mechanism.
+
+Not yet exercised by hand: the tab rendering in the real shell, and the injected prompt arriving in a
+second conversation. Both need a DSH restart (host routes changed) plus a page refresh (client changed).
+
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).

@@ -974,7 +974,10 @@ export async function runClientCancelTests(harness) {
       })
       clickButton(root, '交接给对话')
       await flush()
-      // The "current conversation" row is the one whose label is the auto option, not a session id.
+      // The "current conversation" row is the one whose label comes from the `handoffAuto` string, so
+      // matching on that text keeps this test independent of how the row happens to be worded. (It
+      // previously matched a bare "当前对话", which stopped matching the moment the label gained the
+      // "交给" prefix — a test that silently depended on wording rather than on the key.)
       press(buttonInRow(tree, '交给当前对话', '交接给对话'))
       await flush()
       if (!posted) throw new Error('the hand-off must reach /api/explain')

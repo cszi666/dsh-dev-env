@@ -129,6 +129,18 @@ window.__ModuleLoader__.load({
       handoffLoading: '正在读取会话…',
       handoffNoSessions: '没有可用的会话',
       handoffRunning: '运行中',
+      handoffTab: '交接',
+      handoffSummary: '当前在做什么',
+      handoffTodo: '还需要做（一行一件）',
+      handoffDoing: '正在做',
+      handoffDone: '已经做完',
+      handoffNext: '下一步计划',
+      handoffNotes: '备注（关键决定、踩过的坑）',
+      handoffOnePerLine: '一行一件',
+      handoffSave: '保存交接',
+      handoffSaved: '已保存',
+      handoffSendCurrent: '投给当前对话，从这里接着做',
+      handoffNoSession: '暂时拿不到这个对话的身份，所以无法读写它的交接。',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -237,6 +249,18 @@ window.__ModuleLoader__.load({
       handoffLoading: 'Reading sessions…',
       handoffNoSessions: 'No conversation is available',
       handoffRunning: 'running',
+      handoffTab: 'Handover',
+      handoffSummary: 'What this is about',
+      handoffTodo: 'Still to do (one per line)',
+      handoffDoing: 'In progress',
+      handoffDone: 'Already done',
+      handoffNext: 'Next step',
+      handoffNotes: 'Notes (decisions, traps)',
+      handoffOnePerLine: 'one per line',
+      handoffSave: 'Save handover',
+      handoffSaved: 'Saved',
+      handoffSendCurrent: 'Send to the current conversation and continue from here',
+      handoffNoSession: 'This conversation has no identity available right now, so its handover cannot be read or written.',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -506,6 +530,183 @@ window.__ModuleLoader__.load({
       }
       return Promise.resolve()
     }
+
+    // ------------------------------------------------------------ session handover
+
+    /**
+     * 从 owner 交给组件的 props 里取当前会话身份。
+     *
+     * 会话身份的确切位置取决于 owner 如何 materialize 标准 props，所以按可能性从具体到宽泛依次找。
+     * **找不到就不猜**：宁可显示"拿不到会话身份"，也不要把它写到错误的会话上——交接写错会话比不写更糟。
+     */
+    function sessionIdFrom(props) {
+      if (!props) return ''
+      const standard = props.standard || {}
+      const fromHook =
+        typeof standard.useSession === 'function' ? (standard.useSession() || {}).sessionId : undefined
+      for (const value of [standard.sessionId, props.sessionId, fromHook]) {
+        if (typeof value === 'string' && value.trim()) return value.trim()
+      }
+      return ''
+    }
+
+    /**
+     * 「交接」页签：一个对话的精简任务状态，用来在对话到达上限后接着做。
+     *
+     * 刻意是**结构化的小记录**而不是摘要：还需要做什么、正在做什么、已经做完、下一步。三份清单分开列，
+     * 正是因为"已经做完"能阻止新对话把做完的事再推一遍——而那正是交接存在的理由。
+     */
+    function DevEnvHandoffView(props) {
+      const sessionId = sessionIdFrom(props)
+      const [handoff, setHandoff] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      const [saved, setSaved] = React.useState(false)
+      const [sent, setSent] = React.useState(null)
+
+      // 一次性自检：把组件实际收到的 props 形状打到控制台。会话身份的位置在不同版本里可能不同，
+      // 与其猜，不如让第一次运行把事实说出来。
+      React.useEffect(() => {
+        try {
+          console.log('[dsh-dev-env] handover view props:', Object.keys(props || {}), 'sessionId=', sessionId)
+        } catch {
+          /* 控制台不可用不影响功能 */
+        }
+      }, [])
+
+      React.useEffect(() => {
+        if (!sessionId) return undefined
+        let alive = true
+        api(`/handoff?sessionId=${encodeURIComponent(sessionId)}`)
+          .then((payload) => {
+            if (alive) setHandoff(payload.handoff || {})
+          })
+          .catch((err) => {
+            if (alive) setError(String((err && err.message) || err))
+          })
+        return () => {
+          alive = false
+        }
+      }, [sessionId])
+
+      if (!sessionId) {
+        return h(
+          'div',
+          { className: 'dsh-de-handoff' },
+          h('style', null, HANDOFF_CSS),
+          h('div', { className: 'dsh-de-msg' }, t('handoffNoSession')),
+        )
+      }
+      if (!handoff) {
+        return h(
+          'div',
+          { className: 'dsh-de-handoff' },
+          h('style', null, HANDOFF_CSS),
+          h('div', { className: 'dsh-de-msg' }, error || t('loading')),
+        )
+      }
+
+      const patch = (fields) => {
+        setSaved(false)
+        setHandoff((current) => Object.assign({}, current, fields))
+      }
+
+      const save = async () => {
+        try {
+          const payload = await api('/handoff', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, handoff }),
+          })
+          setHandoff(payload.handoff || handoff)
+          setSaved(true)
+          setError(null)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      /** 把这份交接投给当前对话（host 按活跃度挑选）——"到上限后无缝衔接"的执行动作。 */
+      const send = async () => {
+        try {
+          const payload = await api('/handoff/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: sessionId, lang: currentLang }),
+          })
+          setSent(payload.sessionId || t('handoffAuto'))
+          setError(null)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      const textField = (key, label, rows) =>
+        h(
+          'div',
+          { className: 'dsh-de-hf' },
+          h('label', { className: 'dsh-de-hflabel' }, label),
+          h('textarea', {
+            className: 'dsh-de-hflist',
+            rows,
+            value: handoff[key] || '',
+            onChange: (event) => patch({ [key]: event.target.value }),
+          }),
+        )
+
+      const listField = (key, label) =>
+        h(
+          'div',
+          { className: 'dsh-de-hf' },
+          h('label', { className: 'dsh-de-hflabel' }, label),
+          h('textarea', {
+            className: 'dsh-de-hflist',
+            rows: 4,
+            placeholder: t('handoffOnePerLine'),
+            value: (handoff[key] || []).join('\n'),
+            // 空行丢掉：清单里的一行就是一件事，空行没有含义。
+            onChange: (event) =>
+              patch({ [key]: event.target.value.split('\n').map((row) => row.trim()).filter(Boolean) }),
+          }),
+        )
+
+      return h(
+        'div',
+        { className: 'dsh-de-handoff' },
+        h('style', null, HANDOFF_CSS),
+        h(
+          'div',
+          { className: 'dsh-de-hfhead' },
+          h('h2', null, t('handoffTab')),
+          saved ? h('span', { className: 'dsh-de-ok' }, t('handoffSaved')) : null,
+          sent ? h('span', { className: 'dsh-de-ok' }, `${t('handoffSent')} → ${sent}`) : null,
+          h('span', { className: 'dsh-de-spacer' }),
+          h('button', { className: 'dsh-de-btn', onClick: save }, t('handoffSave')),
+        ),
+        h('div', { className: 'dsh-de-pickq' }, t('handoffHint')),
+        error ? h('div', { className: 'dsh-de-err' }, error) : null,
+        textField('summary', t('handoffSummary'), 2),
+        listField('todo', t('handoffTodo')),
+        listField('doing', t('handoffDoing')),
+        listField('done', t('handoffDone')),
+        textField('next', t('handoffNext'), 2),
+        textField('notes', t('handoffNotes'), 3),
+        h(
+          'div',
+          { className: 'dsh-de-pick' },
+          h('button', { className: 'dsh-de-btn', onClick: send }, t('handoffSendCurrent')),
+        ),
+      )
+    }
+
+    /** 页签自己的样式。面板那份 CSS 是另一个座位的，不该互相依赖。 */
+    const HANDOFF_CSS = `
+.dsh-de-handoff{padding:16px 18px;font-size:13px;color:var(--dsw-alias-label-primary);overflow:auto;height:100%;box-sizing:border-box}
+.dsh-de-hfhead{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.dsh-de-hfhead h2{margin:0;font-size:14px;font-weight:600}
+.dsh-de-hf{margin-top:10px}
+.dsh-de-hflabel{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
+.dsh-de-hflist{width:100%;box-sizing:border-box;resize:vertical;font:inherit;font-size:12px;line-height:1.5;padding:6px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+`
 
     // ------------------------------------------------------------ sidebar icon
 
@@ -1584,6 +1785,24 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('main', () =>
           ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, DevEnvPage),
         )
+        // 红框里那个位置的第三个页签：交接（handoff）。和宿主侧 handoff.js 配套。
+        //
+        // 注册进 `conversation.view` 的原因：那个槽位是**会话级**的，owner 会把它知道的会话身份作为
+        // 标准 prop 交给我的组件；而我现在所在的 `main/dev-env` 没有会话绑定（main 的 standardProps
+        // 里没有 sessionId）。交接必须知道"这是哪个对话的交接"，所以只能在那个座位实现。
+        //
+        // 注册方式照官方示例：`{ name, id, order, label }` + 组件，用**自己的 id** 就落在旁边一格，
+        // 不会顶掉 chat/trajectory。
+        try {
+          ctx.slots.inject('conversation.view', () =>
+            ctx.slots.register(
+              { name: 'conversation.view', id: 'dev-env-handoff', order: 20, locale: NS, label: () => t('handoffTab') },
+              DevEnvHandoffView,
+            ),
+          )
+        } catch {
+          /* 没有这个槽位（旧版本 DSH）就退化为"只有面板"，不影响其余功能 */
+        }
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
             { name: 'sidebar.panellist', id: PANEL_ID, order: 20, locale: NS, label: () => t('panel') },

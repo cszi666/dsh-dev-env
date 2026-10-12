@@ -1127,6 +1127,30 @@ check('the handoff prompt carries the lists and does not collapse its blank line
   assert(!/\n\n\n/.test(text), `absent sections must not leave triple newlines:\n${text}`)
 })
 
+check('neither dictionary declares a key twice', () => {
+  // An object literal silently lets the LAST duplicate win, so a second entry for the same key makes
+  // the first one dead code that still reads as if it were in effect. That happened while adding the
+  // handover tab: 'handoffAuto' was added twice with different text, and the visible label was not the
+  // one the newer line appeared to define. Only a textual check can see this.
+  const source = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  const blocks = [
+    ['zh', source.slice(source.indexOf('const DICT_ZH'), source.indexOf('const DICT_EN'))],
+    ['en', source.slice(source.indexOf('const DICT_EN'), source.indexOf('const DICT_EN') + 12000)],
+  ]
+  for (const [lang, block] of blocks) {
+    assert(block && block.length, `could not locate the ${lang} dictionary`)
+    const seen = new Map()
+    for (const match of block.matchAll(/^\s{4,}([A-Za-z][A-Za-z0-9_]*):/gm)) {
+      const key = match[1]
+      if (seen.has(key)) {
+        assert(false, `${lang} dictionary declares '${key}' twice (lines offset ${seen.get(key)} and ${match.index})`)
+      }
+      seen.set(key, match.index)
+    }
+    assert(seen.size > 20, `${lang} dictionary looks too small to be real (${seen.size} keys) — did the bounds slip?`)
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 
