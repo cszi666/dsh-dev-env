@@ -881,11 +881,13 @@ export async function runClientCancelTests(harness) {
       if (!visibleTextOf(tree).includes('已交给 DSH')) throw new Error('the user should be told it was handed over')
     })
 
-    // ------------------------------------------------------------ source picker
-    // "Pick a download source, and if nothing is chosen the first (most reliable) route starts on its
-    // own after five seconds." Auto-starting is only defensible because host verifies every source
-    // first, so the countdown begins on a proven route rather than on a hope.
+    // ------------------------------------------------------------ winget fallback
+    // winget adapts very differently across environments — no Store, sources disabled by policy, needs
+    // admin — and every one of those reads to the user as the same thing: a non-zero exit code. So the
+    // host records the alternative route and the panel offers it, without auto-retrying: a retry by
+    // another mechanism still changes the machine and still needs a click.
 
+    // Shared by the winget-fallback and source-picker checks below, so it is declared before both.
     const downloadItem = () => ({
       id: 'jmeter',
       name: 'Apache JMeter',
@@ -920,6 +922,48 @@ export async function runClientCancelTests(harness) {
         ],
       },
     }
+
+    await harness.check('a failed winget job offers the download route, and only on demand', async () => {
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: {
+          id: 'job1',
+          status: 'failed',
+          itemId: 'jmeter',
+          mode: 'winget',
+          error: '安装进程退出码 2316632084',
+          fallback: { mode: 'download', label: '自己下载 Apache JMeter 的官方压缩包' },
+        },
+        inventory: inventoryWith(downloadItem()),
+      })
+      clickButton(root, '详情')
+      const text = visibleTextOf(tree)
+      if (!text.includes('改用另一条路')) throw new Error(`the alternative should be offered, got: ${text.slice(0, 240)}`)
+      // Offering it must not have started anything.
+      if (fetchCalls.some((call) => call.path.endsWith('/api/install'))) {
+        throw new Error('offering the alternative must not start it')
+      }
+      clickButton(tree, '改用另一条路：自己下载')
+      await flush()
+      const installs = fetchCalls.filter((call) => call.path.endsWith('/api/install'))
+      if (installs.length !== 1) throw new Error(`expected one install, got ${installs.length}`)
+      if (installs[0].body.mode !== 'download') throw new Error(`posted mode ${JSON.stringify(installs[0].body.mode)}`)
+      if (installs[0].body.id !== 'jmeter') throw new Error(`posted id ${JSON.stringify(installs[0].body.id)}`)
+    })
+
+    await harness.check('a job with no alternative shows no such button', async () => {
+      // Most failures have no second route (a pip failure, an uninstall failure). A button leading
+      // nowhere would be worse than the bare error message.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { id: 'job1', status: 'failed', error: '安装进程退出码 1' },
+      })
+      clickButton(root, '详情')
+      if (visibleTextOf(tree).includes('改用另一条路')) throw new Error('no alternative was recorded, so none may be offered')
+    })
+
+    // ------------------------------------------------------------ source picker
+    // "Pick a download source, and if nothing is chosen the first (most reliable) route starts on its
+    // own after five seconds." Auto-starting is only defensible because host verifies every source
+    // first, so the countdown begins on a proven route rather than on a hope.
 
     await harness.check('the install button opens a source picker, listing only verified sources', async () => {
       const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {

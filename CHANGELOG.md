@@ -9,6 +9,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **More entries can be installed without winget, and a failed winget install offers the route.**
+  `install.download` now also covers `maven`, `ant`, `python`, `nodejs` and `curl` — each one verified
+  before being added. `curl` uses curl.se's rolling `latest.cgi` link, which never changes and so cannot
+  rot; the others discover the version from a listing, so nothing is pinned. This matters because
+  **winget adapts very differently across environments**: a machine with no Store, one where a policy
+  disables the sources, and one without administrator rights all fail the same way from the user's point
+  of view — a non-zero exit code with no explanation. When a `winget` job fails and the entry has another
+  route, the panel now offers **改用另一条路** and the job log says why. It is not an automatic retry:
+  switching mechanism still changes the machine, so it still takes a click.
 - **A download-source picker on one-click install, with a five-second auto-start.** For the entries we
   fetch ourselves (jmeter, tomcat9, tomcat11) the install button now asks *which source* first: the
   official one plus the mirrors that were verified — `Apache 官方 (dlcdn)`, `清华 TUNA`, `阿里云`. The
@@ -54,6 +63,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Two ways a version could be silently wrong.** The first: `^node-(v[\d.]+)-x64\.msi$` captured
+  `v24.21.0`, and since the panel renders the captured group as the version it read `vv24.21.0`. The
+  second is the one that matters — **taking the numerically newest directory is not the same as taking
+  the release the entry claims.** nodejs.org's newest version is v26.11.1 (Current) while its LTS is
+  v24.21.0 two majors behind, and that entry's own winget id is `OpenJS.NodeJS.LTS`, so "newest wins"
+  would have installed a different release line than the one the entry promises. It now uses the
+  official LTS *alias* directory. Related: 清华's `nodejs-release` mirror carries all history and no
+  alias, so mirroring Node was dropped — there, "newest directory" resolves to v24.1.0, a whole release
+  line behind, and a mirror that silently serves stale versions is worse than no mirror. Both failure
+  modes are now covered by guards over every declared source, because both are properties of a pattern
+  rather than one-off mistakes.
 - **A countdown that could never reach zero.** The picker's timer was cleared and re-armed on every
   render, and the panel re-renders about once a second for its job polling and clock — so the
   one-second tick was cancelled before it could fire past the first step, and the auto-start would

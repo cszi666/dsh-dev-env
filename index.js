@@ -1339,6 +1339,19 @@ function startJob(state, item, plan) {
       job.endedAt = Date.now()
       if (code !== 0) {
         job.error = plan.mode === 'uninstall' ? `卸载进程退出码 ${code}` : `安装进程退出码 ${code}`
+        // winget **在不同环境里适配度差别很大**：这台机器上它是 0 字节的 Store 别名（完全跑不起来），
+        // 别的机器上它可能装好了却因为"--scope machine 需要提权""企业策略禁用了源""源不可达"而失败——
+        // 那些情况下安装进程同样返回非 0，而用户看到的只是一个退出码。
+        //
+        // 所以失败时把**别的路**一并记下来，让面板能直接给出"改用自己下载"。这不是自动重试：
+        // 换一种方式改动系统仍然要用户点头。
+        if (plan.mode === 'winget') {
+          const alternative = plansFor(item, { wingetReady: false }).find((row) => row.mode === 'download')
+          if (alternative) {
+            job.fallback = { mode: 'download', label: alternative.label }
+            job.log.push(`这条命令失败了；这个条目还有一条不依赖 winget 的路：${alternative.label}`)
+          }
+        }
       }
       // 卸载之后要**复查**，不能只看退出码：交互式卸载器往往立刻返回 0 而实际什么都没做，
       // 而 winget 卸载一个不是它装的工具也可能报成功。复查走的是扫描用的同一个探针，

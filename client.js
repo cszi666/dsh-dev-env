@@ -117,6 +117,8 @@ window.__ModuleLoader__.load({
       pickSourceNone: '没有验证通过的来源。只能打开官网自己下载。',
       pickSourceFailed: '未通过验证（列表不可用或文件取不到）',
       pickSourceCancel: '先不装',
+      tryInstead: '改用另一条路',
+      tryInsteadWhy: 'winget 在不同的环境里适配度差别很大（没有 Store、源被策略禁用、需要管理员权限）。这条命令失败了，但这个条目有一条不依赖它的路。',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -213,6 +215,8 @@ window.__ModuleLoader__.load({
       pickSourceNone: 'No source passed verification. Only the download page is left.',
       pickSourceFailed: 'did not verify (listing unavailable or file not fetchable)',
       pickSourceCancel: 'Not now',
+      tryInstead: 'Take the other route',
+      tryInsteadWhy: 'winget adapts very differently across environments (no Store, sources disabled by policy, needs admin). This command failed, but the entry has a route that does not depend on it.',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -623,6 +627,12 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(null)
         }
+      }
+
+      /** 从任务详情里按 mode 重新走一次安装（用于"改用自己下载"这种退路）。 */
+      const installById = (itemId, mode) => {
+        const item = items.find((row) => row.id === itemId)
+        if (item) install(item, mode)
       }
 
       const onCopy = (item, label) => {
@@ -1367,6 +1377,20 @@ window.__ModuleLoader__.load({
                             : null,
                           job.activity ? h('div', { className: 'dsh-de-activity' }, job.activity) : null,
                           job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
+                          // winget 失败时的退路。**不自动重试**：换一种方式改动系统仍要用户点头，
+                          // 而自动重试会让一次点击变成两次安装尝试。
+                          job.fallback
+                            ? h(
+                                'div',
+                                { className: 'dsh-de-pick' },
+                                h(
+                                  'button',
+                                  { className: 'dsh-de-btn', onClick: () => installById(job.itemId, job.fallback.mode) },
+                                  `${t('tryInstead')}：${t('fromOwnDownload')}`,
+                                ),
+                                h('span', { className: 'dsh-de-pickq' }, t('tryInsteadWhy')),
+                              )
+                            : null,
                           // 失败或还在跑都能求助：卡住的任务往往比失败的任务更需要人来看。
                           // 成功的任务不给——那时没有需要解决的问题，给了只会是噪音。
                           job.status === 'failed' || job.status === 'running'

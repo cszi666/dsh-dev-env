@@ -83,6 +83,7 @@ export const DESCRIPTIONS = {
   ninja: { zh: '追求速度的构建工具, 常由 CMake 生成任务', en: 'Fast build tool often driven by files CMake generates' },
   make: { zh: '按 Makefile 描述编译项目的经典构建工具', en: 'Classic build tool that compiles a project from a Makefile' },
   maven: { zh: '在命令行管理 Java 项目的构建与依赖', en: 'Java build and dependency manager driven from the command line' },
+  ant: { zh: '较早的 Java 构建工具, 按 build.xml 打包', en: 'Earlier Java build tool that runs tasks from build.xml' },
   gradle: { zh: '用脚本配置的构建工具, 安卓项目常用', en: 'Script-configured build tool widely used by Android projects' },
   winget: { zh: 'Windows 自带包管理器, 用命令装软件', en: 'Microsoft package manager that installs apps from a terminal' },
   scoop: { zh: '面向开发者的命令行安装工具, 免管理员权限', en: 'Command-line installer aimed at developers, no admin needed' },

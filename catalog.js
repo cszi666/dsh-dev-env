@@ -96,7 +96,21 @@ export const CATALOG = [
 
   { id: 'python', name: 'Python', category: 'language', essential: true,
     probe: { kind: 'argv', argv: ['python', '--version'], pattern: 'Python ([\\d.]+)' },
-    install: { winget: 'Python.Python.3.12', page: 'https://www.python.org/downloads/windows/' } },
+    // 自己下载的备选：winget 在不少环境里用不了（无 Store、无管理员权限、企业策略禁装），
+    // 而 python.org 的 ftp 目录结构从 3.x 起就没变过，所以版本仍然是被发现的、不是写死的。
+    // 安装器是 .exe：我们能下载并校验，但**静默安装需要参数**，那属于另一件事，所以这里只
+    // 负责把文件取到本地并告诉用户它在哪。
+    install: { winget: 'Python.Python.3.12', page: 'https://www.python.org/downloads/windows/',
+      download: { sources: [
+        { name: 'pythonorg', label: 'Python 官方 (python.org)',
+          listing: 'https://www.python.org/ftp/python/',
+          directoryPattern: '^(3\\.13\\.[\\d.]+)/$',
+          subPath: '{version}/python-{version}-amd64.exe' },
+        { name: 'tuna', label: '清华 TUNA',
+          listing: 'https://mirrors.tuna.tsinghua.edu.cn/python/',
+          directoryPattern: '^(3\\.13\\.[\\d.]+)/$',
+          subPath: '{version}/python-{version}-amd64.exe' },
+      ] } } },
 
   { id: 'python3', name: 'Python 3 (python3)', category: 'language',
     probe: { kind: 'argv', argv: ['python3', '--version'], pattern: 'Python ([\\d.]+)' },
@@ -116,7 +130,20 @@ export const CATALOG = [
 
   { id: 'nodejs', name: 'Node.js', category: 'language', essential: true,
     probe: { kind: 'argv', argv: ['node', '--version'], pattern: 'v([\\d.]+)' },
-    install: { winget: 'OpenJS.NodeJS.LTS', page: 'https://nodejs.org/en/download' } },
+    // **刻意用官方的 LTS 别名目录，而不是"取数字最大的版本目录"**：后者会选中 Current 版
+    // （榜单上 v26.11.1 是 Current，LTS 是 v24.21.0），而这条目的 winget 声明本身就是 LTS。
+    // `latest-v24.x/` 永远指向最新的 v24 LTS，所以这里没有版本号会被写死。
+    //
+    // 也**不提供镜像源**：清华的 nodejs-release 是全量历史目录、没有 LTS 别名，只能按数字取最新，
+    // 于是会给出 v24.1.0 这种落后两个大版本的包（实测）。宁可只给一个正确的源，
+    // 也不给一个"能下但版本不对"的源——那种错误用户很难发现。
+    install: { winget: 'OpenJS.NodeJS.LTS', page: 'https://nodejs.org/en/download',
+      download: { sources: [
+        { name: 'nodejs', label: 'Node.js 官方 LTS (nodejs.org)',
+          listing: 'https://nodejs.org/dist/latest-v24.x/',
+          // 版本号里不带 `v`：捕获组的结果会直接当作版本展示，带上前缀就会显示成 `vv24.21.0`。
+          fileNamePattern: '^node-v([\\d.]+)-x64\\.msi$' },
+      ] } } },
 
   { id: 'npm', name: 'npm', category: 'language',
     probe: { kind: 'argv', argv: ['npm', '--version'], pattern: '([\\d.]+)' },
@@ -450,7 +477,16 @@ export const CATALOG = [
 
   { id: 'maven', name: 'Apache Maven', category: 'tool',
     probe: { kind: 'argv', argv: ['mvn', '-v'], pattern: 'Apache Maven ([\\d.]+)' },
-    install: { winget: 'Apache.Maven', page: 'https://maven.apache.org/download.cgi' } },
+    // dlcdn 的 maven-3 目录只列版本号目录，所以版本是发现的；三个来源互为备份。
+    install: { winget: 'Apache.Maven', page: 'https://maven.apache.org/download.cgi',
+      download: { sources: [
+        { name: 'apache', label: 'Apache 官方 (dlcdn)', listing: 'https://dlcdn.apache.org/maven/maven-3/',
+          directoryPattern: '^(3\\.[\\d.]+)/$', subPath: '{version}/binaries/apache-maven-{version}-bin.zip' },
+        { name: 'tuna', label: '清华 TUNA', listing: 'https://mirrors.tuna.tsinghua.edu.cn/apache/maven/maven-3/',
+          directoryPattern: '^(3\\.[\\d.]+)/$', subPath: '{version}/binaries/apache-maven-{version}-bin.zip' },
+        { name: 'aliyun', label: '阿里云', listing: 'https://mirrors.aliyun.com/apache/maven/maven-3/',
+          directoryPattern: '^(3\\.[\\d.]+)/$', subPath: '{version}/binaries/apache-maven-{version}-bin.zip' },
+      ] } } },
 
   { id: 'gradle', name: 'Gradle', category: 'tool',
     probe: { kind: 'argv', argv: ['gradle', '--version'], pattern: 'Gradle ([\\d.]+)' },
@@ -470,7 +506,22 @@ export const CATALOG = [
 
   { id: 'curl', name: 'curl', category: 'tool',
     probe: { kind: 'argv', argv: ['curl.exe', '--version'], pattern: 'curl ([\\d.]+)' },
-    install: { winget: 'cURL.cURL', page: 'https://curl.se/windows/' } },
+    // 最理想的一种来源：curl.se 提供一个**永不变化的滚动链接**，所以既不用发现版本、也不会腐烂。
+    // 代价是它永远给最新版——这也正是"官方推荐下载"的语义。
+    install: { winget: 'cURL.cURL', page: 'https://curl.se/windows/',
+      download: { sources: [
+        { name: 'curlse', label: 'curl 官方 (curl.se)', direct: 'https://curl.se/windows/latest.cgi?p=win64-mingw.zip' },
+      ] } } },
+
+  { id: 'ant', name: 'Apache Ant', category: 'tool',
+    probe: { kind: 'argv', argv: ['ant', '-version'], pattern: 'Apache Ant\\(TM\\) version ([\\d.]+)' },
+    install: { winget: 'Apache.Ant', page: 'https://ant.apache.org/bindownload.cgi',
+      download: { sources: [
+        { name: 'apache', label: 'Apache 官方 (dlcdn)', listing: 'https://dlcdn.apache.org/ant/binaries/',
+          fileNamePattern: '^apache-ant-([\\d.]+)-bin\\.zip$' },
+        { name: 'tuna', label: '清华 TUNA', listing: 'https://mirrors.tuna.tsinghua.edu.cn/apache/ant/binaries/',
+          fileNamePattern: '^apache-ant-([\\d.]+)-bin\\.zip$' },
+      ] } } },
 
   { id: 'gh', name: 'GitHub CLI (gh)', category: 'tool',
     probe: { kind: 'argv', argv: ['gh', '--version'], pattern: 'gh version ([\\d.]+)' },

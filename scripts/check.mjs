@@ -944,6 +944,70 @@ check('the shipped tomcat entries declare a resolvable download source', () => {
   }
 })
 
+// ------------------------------------------------------------------ source hygiene
+console.log('\nsource hygiene')
+
+/** Every source spec in the catalog, with the entry id that owns it. */
+function downloadSources() {
+  const rows = []
+  for (const entry of CATALOG) {
+    const download = entry.install?.download
+    if (!download) continue
+    for (const source of download.sources ?? [download]) rows.push({ entry, source })
+  }
+  return rows
+}
+
+check('a captured version never carries a leading v', () => {
+  // Actually made this mistake: `^node-(v[\d.]+)-x64\.msi$` captured "v24.21.0", and the panel renders
+  // the captured group as the version, so it displayed "vv24.21.0". It is a property of the pattern,
+  // so it can be checked rather than remembered.
+  let checked = 0
+  for (const { entry, source } of downloadSources()) {
+    if (!source.fileNamePattern) continue
+    // Feed the pattern a filename whose version *does* carry a 'v', which is how nodejs.org names its
+    // files. A well-written pattern either leaves the prefix out of the group, or does not match.
+    const match = new RegExp(source.fileNamePattern).exec('node-v1.2.3-x64.msi')
+    const captured = match?.[1]
+    assert(captured === undefined || !/^v/i.test(captured),
+      `${entry.id}: the captured version must not carry a 'v' prefix (got ${JSON.stringify(captured)})`)
+    checked += 1
+  }
+  assert(checked > 0, 'expected at least one fileNamePattern to check')
+})
+
+check('a directoryPattern never accepts a pre-release directory', () => {
+  // python.org's ftp tree carries 3.14.0rc1/ and 3.13.0a1/ alongside the releases. "Newest directory
+  // wins" would then install a release candidate -- a real risk for a runtime the user depends on.
+  for (const { entry, source } of downloadSources()) {
+    if (!source.directoryPattern) continue
+    const re = new RegExp(source.directoryPattern)
+    for (const pre of ['3.14.0rc1/', '3.13.0a1/', '3.13.0b2/', '11.0.0-M1/']) {
+      const match = re.exec(pre)
+      if (match?.[1] && /(rc|alpha|beta|-M)\d*$/i.test(match[1])) {
+        assert(false, `${entry.id}: directoryPattern accepts the pre-release ${pre} (captured ${match[1]})`)
+      }
+    }
+  }
+})
+
+check('nodejs downloads the LTS line the entry claims, not the newest version', () => {
+  // Getting this wrong puts a wrong runtime on the machine. nodejs.org's numerically newest directory
+  // is the Current line (v26.11.1) while its LTS is two majors behind (v24.21.0), and this entry's own
+  // winget id is OpenJS.NodeJS.LTS. So it uses the official LTS *alias* directory -- which is also why
+  // it has no mirror source: 清华's nodejs-release carries all history and no alias, so "newest
+  // directory" there resolves to v24.1.0, lagging a whole release line behind.
+  const node = CATALOG.find((entry) => entry.id === 'nodejs')
+  const sources = node.install.download.sources
+  assert(sources.length >= 1, 'nodejs needs a source')
+  for (const source of sources) {
+    assert(!source.directoryPattern,
+      `nodejs must not discover by version directory (got ${source.directoryPattern})`)
+    assert(/latest-v\d+\.x/.test(source.listing),
+      `nodejs should use an official LTS alias directory, got ${source.listing}`)
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

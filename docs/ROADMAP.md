@@ -372,6 +372,40 @@ Three defects were found while building it, two in the panel rather than the plu
    and `advance()` drains the effect queue between timers. Until those two were fixed, defect 1 was
    invisible to the suite.
 
+### 11. Winget's environment sensitivity, and more install routes — **done, unreleased**
+
+What the census found (`tools/census-direct-urls.mjs`, `check-more-sources.mjs`):
+
+| direct route | result |
+|---|---|
+| `curl` (rolling `latest.cgi`) | usable — the ideal case, nothing to pin |
+| `maven`, `ant`, `python`, `nodejs` | usable — version discovered from a listing |
+| `docker`, `jenkins` | resolve, but the file is an installer/war: no silent path, so not wired |
+| `ninja`, `cmake`, `gh`, `allure` | **unreachable — all hosted on github.com releases** |
+| `go`, `rust`, `gradle`, `php`, `ruby`, `gcc`, `notepad++` | landing pages or APIs, no stable direct file |
+
+So `install.download` now covers 8 entries. **github.com being blocked is the single biggest limiter**:
+several otherwise-trivial tools would have a direct route if their releases were reachable, which is
+worth remembering before concluding that a tool "has no download option".
+
+**Winget is not one thing.** The health check catches what this machine has — a 0-byte app-alias stub
+with no DesktopAppInstaller, printing nothing and exiting `0x8A150001`. It does **not** catch a winget
+that answers `--version` and then fails because a policy disabled its sources, because the package needs
+machine scope and there is no administrator, or because the source is unreachable. All three look
+identical to the user: a non-zero exit code. Making the check stricter was rejected — probing a real
+install to test it is slower and can itself change the machine. The second half of the answer is a
+**fallback** instead: a failed `winget` job whose entry has another route records it, and the panel
+offers **改用另一条路**. Deliberately not an automatic retry, for the same reason the uninstall
+confirmation exists.
+
+Two version bugs were caught while adding sources, both now guarded across every source rather than
+fixed once: a capture group that included the `v` prefix (rendered as `vv24.21.0`), and — the important
+one — **"newest directory" is not "the release the entry promises"**. Node's newest is the Current line
+(v26.11.1) while its LTS is v24.21.0, and the entry declares `OpenJS.NodeJS.LTS`; it now uses the
+official LTS alias directory. The same reasoning removed Node's mirror: 清华 carries all history and no
+alias, so "newest" there gave v24.1.0, a whole line behind — and a mirror that silently serves stale
+versions is worse than no mirror.
+
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).
