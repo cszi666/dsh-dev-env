@@ -315,6 +315,26 @@ Not yet exercised by hand: an actual uninstall of a real tool. The tests cover t
 confirmation, the refusal to offer a dead button, the re-check display and the `/I` rewrite, but the
 end-to-end "click it and the tool is gone" path needs one manual pass (git is a safe candidate).
 
+### 9. Ask DSH for help from a job — **done, unreleased**
+
+Also requested after 1.1.2: a failure only surfaced as a log inside the detail area, which leaves the
+user exactly where they started. There is now a **让 DSH 帮我解决** button on a job that failed *or is
+still running* (a hang is when help is most wanted; a succeeded job offers nothing).
+
+It reuses the hand-off tool explanations already had, so there is one mechanism rather than two:
+`POST /api/explain` with either `{ id }` (explain a tool) or `{ jobId }` (diagnose a job), both going
+through `askDsh()`, which posts into the most recently active session.
+
+The message is built from the job's **real state**, not a paraphrase of it — status, phase, command or
+source, error, download URL, byte counts, exit code, note, and the last 30 log lines — and it names
+`dev_env_inventory` / `dev_env_job` so DSH checks the machine instead of assuming. One line matters as
+much as the facts: it asks for a resolution, not a list of possible causes. `npm test` guards that all
+of that is present in both languages, and that no optional line collapses into a stray blank line (a
+job without an exit code used to render one in the middle of the facts).
+
+Still to exercise by hand: the round trip — click it, watch the question arrive in the session, and
+confirm the answer is useful. The earlier "let DSH explain a tool" flow was verified that way.
+
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).

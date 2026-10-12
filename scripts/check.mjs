@@ -809,6 +809,46 @@ check('install-by-hand tools carry no uninstall route at all', () => {
   }
 })
 
+// ------------------------------------------------------------------ asking DSH for help
+console.log('\nasking DSH for help')
+
+check('the help prompt carries what a diagnosis needs, and asks for a fix', () => {
+  // A log that only shows up inside the panel leaves the user where they started. This prompt is the
+  // hand-off, so it must contain the facts — and it must ask for a resolution rather than a list of
+  // possibilities, because the person clicking it has a real failure in front of them.
+  const job = {
+    id: 'd3adbeef',
+    itemId: 'jmeter',
+    name: 'Apache JMeter',
+    mode: 'download',
+    label: '自己下载 Apache JMeter 的官方压缩包',
+    status: 'failed',
+    phase: 'download',
+    error: '字节数不符：收到 12.3 MB，预期 86.4 MB',
+    url: 'https://dlcdn.apache.org/jmeter/binaries/apache-jmeter-5.6.3.zip',
+    receivedBytes: 12_900_000,
+    totalBytes: 90_631_635,
+    exitCode: null,
+    note: '残片不可续传（ETag 已变化），已删除并重新下载',
+    log: ['下载源：https://dlcdn.apache.org/jmeter/binaries/', '失败：字节数不符：收到 12.3 MB，预期 86.4 MB'],
+  }
+  const item = { id: 'jmeter', name: 'Apache JMeter', nameEn: 'Apache JMeter' }
+
+  for (const [lang, needles] of [
+    ['zh', ['Apache JMeter', 'jmeter', 'download', 'failed', '字节数不符', 'dlcdn.apache.org', '90631635', '下载源：', 'dev_env_job', '不要只罗列']],
+    ['en', ['Apache JMeter', 'jmeter', 'failed', '字节数不符', 'dlcdn.apache.org', '90631635', 'dev_env_job', 'Do not just list']],
+  ]) {
+    const text = __test.jobHelpPrompt(job, item, lang)
+    for (const needle of needles) {
+      assert(text.includes(needle), `${lang} prompt is missing ${needle}`)
+    }
+    // Optional lines must not leave a blank line in the middle of the facts: a job with no exit code
+    // used to render one between "transferred" and "note", which reads as a missing section.
+    const factBlock = text.split(/\n\n/)[0]
+    assert(!/\n\s*\n/.test(factBlock), `${lang} facts should be contiguous, got:\n${factBlock}`)
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

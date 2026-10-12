@@ -9,6 +9,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **“让 DSH 帮我解决” on a job that failed or is still running.** A failure used to end inside the
+  panel: the detail area showed the log and the user was left holding it. The button hands the job to
+  DSH — the same hand-off the tool explanations already use — and the host composes the message from
+  the job's real state rather than from a description of it: status and phase, the command or source,
+  the reported error, the download URL, the transferred and expected byte counts, the exit code, the
+  note, and the last 30 log lines. It goes out with the tools that can verify it (`dev_env_inventory`,
+  `dev_env_job`) and asks for a fix rather than a list of possibilities, because whoever clicks it has
+  a real failure in front of them. A successful job deliberately offers nothing: there is nothing to
+  solve, and the button would only be noise.
 - **Uninstall an installed tool from the panel.** The panel's first destructive action, so it is
   deliberately conservative. `uninstall` is computed by the host per entry and is **null** when there
   is no honest way to remove the tool — the eleven install-by-hand entries (zentao, adb, junit,

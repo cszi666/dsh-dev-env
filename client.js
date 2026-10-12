@@ -97,6 +97,10 @@ window.__ModuleLoader__.load({
       phaseUninstall: '卸载中',
       uninstallGone: '复查：已经探测不到它了',
       uninstallStill: '复查：仍然能被探测到，卸载可能没有真正完成',
+      askHelp: '让 DSH 帮我解决',
+      askHelpTitle: '把这条任务的错误、命令和日志交给 DSH，让它诊断并给出这台机器上的下一步',
+      askingHelp: '正在转交…',
+      helpSent: '已交给 DSH，去看对话',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -181,6 +185,10 @@ window.__ModuleLoader__.load({
       phaseUninstall: 'Uninstalling',
       uninstallGone: 'Re-check: it is no longer detected',
       uninstallStill: 'Re-check: it is still detected, so the uninstall may not have completed',
+      askHelp: 'Let DSH fix this',
+      askHelpTitle: 'Hand this job’s error, command and log to DSH so it can diagnose it and say what to do next on this machine',
+      askingHelp: 'Handing over…',
+      helpSent: 'Handed to DSH — check the conversation',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -493,6 +501,8 @@ window.__ModuleLoader__.load({
       // 会真的删东西的动作，提示文案也要能带上"这是核心工具"这类上下文。
       const [uninstalling, setUninstalling] = React.useState(null)
       const [confirmUninstall, setConfirmUninstall] = React.useState(null)
+      // 正在把哪条任务转交给 DSH 求助（按钮要锁住，避免重复投递同一份日志）。
+      const [helping, setHelping] = React.useState(null)
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
@@ -745,6 +755,29 @@ window.__ModuleLoader__.load({
           setError(String((err && err.message) || err))
         } finally {
           setUninstalling(null)
+        }
+      }
+
+      /**
+       * 把一条失败/卡住的任务交给 DSH 求助。
+       *
+       * 面板只把**事实**送过去（状态、命令、错误、日志尾部），让 DSH 去查证和解决——
+       * 面板不做诊断，否则就出现了第二份判断逻辑。
+       */
+      const helpJob = async (job) => {
+        setHelping(job.id)
+        try {
+          await api('/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobId: job.id, lang: currentLang }),
+          })
+          setNotice({ itemId: job.id, text: t('helpSent') })
+          setTimeout(() => setNotice((current) => (current && current.itemId === job.id ? null : current)), 4000)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        } finally {
+          setHelping(null)
         }
       }
 
@@ -1152,6 +1185,27 @@ window.__ModuleLoader__.load({
                             : null,
                           job.activity ? h('div', { className: 'dsh-de-activity' }, job.activity) : null,
                           job.error ? h('div', { className: 'dsh-de-err' }, job.error) : null,
+                          // 失败或还在跑都能求助：卡住的任务往往比失败的任务更需要人来看。
+                          // 成功的任务不给——那时没有需要解决的问题，给了只会是噪音。
+                          job.status === 'failed' || job.status === 'running'
+                            ? h(
+                                'div',
+                                { className: 'dsh-de-pick' },
+                                h(
+                                  'button',
+                                  {
+                                    className: 'dsh-de-btn',
+                                    title: t('askHelpTitle'),
+                                    disabled: helping === job.id,
+                                    onClick: () => helpJob(job),
+                                  },
+                                  helping === job.id ? t('askingHelp') : `🆘 ${t('askHelp')}`,
+                                ),
+                                notice && notice.itemId === job.id
+                                  ? h('span', { className: 'dsh-de-pickmsg' }, notice.text)
+                                  : h('span', { className: 'dsh-de-pickq' }, t('askHelpTitle')),
+                              )
+                            : null,
                           h('div', { className: 'dsh-de-groupname' }, t('logTail')),
                           job.log && job.log.length
                             ? h('pre', { className: 'dsh-de-pre' }, job.log.slice(-200).join('\n'))

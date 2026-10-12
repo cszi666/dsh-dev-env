@@ -781,6 +781,81 @@ function explainPrompt(item, lang) {
   return lines.filter(Boolean).join('\n')
 }
 
+/**
+ * 给一个**失败或卡住的任务**生成求助提问。
+ *
+ * 和 explainPrompt 的区别在于：那条是"这个工具是什么"，这条是"这件事为什么没成"。
+ * 所以这里必须把**这台机器上的实际状态**带上——状态、阶段、错误、最后几行输出、
+ * 实际执行的命令、下载地址与传输计数。DSH 拿到这些才能真的诊断，而不是给一段泛泛的建议。
+ *
+ * 明确写出"不要只说可能的原因"：用户点这个按钮是要解决问题，不是要一份清单。
+ */
+function jobHelpPrompt(job, item, lang) {
+  const english = lang === 'en'
+  const tail = (job.log || []).slice(-30)
+  // 可选行用空串表示"不适用"。这里先按位置收集，再把空串丢掉，最后在日志段前统一留一个空行——
+  // 否则某一条不适用时，那个空行会落在"已传输"和"备注"中间，读起来像缺了一段。
+  const zh = [
+    `我这边有一个 dsh-dev-env 的安装任务没有成功，需要你帮我解决。`,
+    `任务：${job.name}（${job.itemId}），方式 ${job.mode}，状态 ${job.status}，阶段 ${job.phase || '-'}。`,
+    `执行的命令或来源：${job.label}`,
+    job.error ? `报错：${job.error}` : '',
+    job.url ? `下载地址：${job.url}` : '',
+    job.totalBytes ? `已传输：${job.receivedBytes ?? 0} / ${job.totalBytes} 字节` : '',
+    job.exitCode === null || job.exitCode === undefined ? '' : `退出码：${job.exitCode}`,
+    job.note ? `备注：${job.note}` : '',
+  ]
+  const en = [
+    `A dev-env install job on my machine did not succeed and I need it fixed.`,
+    `Job: ${job.name} (${job.itemId}), mode ${job.mode}, status ${job.status}, phase ${job.phase || '-'}.`,
+    `Command or source: ${job.label}`,
+    job.error ? `Reported error: ${job.error}` : '',
+    job.url ? `Download URL: ${job.url}` : '',
+    job.totalBytes ? `Transferred: ${job.receivedBytes ?? 0} of ${job.totalBytes} bytes` : '',
+    job.exitCode === null || job.exitCode === undefined ? '' : `Exit code: ${job.exitCode}`,
+    job.note ? `Note: ${job.note}` : '',
+  ]
+  const facts = (english ? en : zh).filter(Boolean)
+  const tailLines = tail.map((line) => `  ${line}`)
+  const closing = english
+    ? [
+        `The machine is Windows and this is the dsh-dev-env plugin. Its catalog entry for ${job.itemId} declares how it detects and installs this tool; the host tools dev_env_inventory and dev_env_job expose the same information — call them to check the real current state instead of assuming it.`,
+        `Tell me why it failed and what to do next on this machine. Do not just list possible causes; this is a real failure I need resolved.`,
+      ]
+    : [
+        `这台机器是 Windows，插件是 dsh-dev-env。它的目录条目里声明了这个工具怎么探测、怎么补齐；host 侧的 dev_env_inventory 和 dev_env_job 两个工具能拿到同样的信息——请调用它们确认当前真实状态，不要凭假设判断。`,
+        `请告诉我它为什么失败、以及在这台机器上接下来该怎么做。不要只罗列可能的原因，这是我真实遇到的问题，需要解决。`,
+      ]
+  return [...facts, '', english ? `Last ${tailLines.length} log lines:` : `最后 ${tailLines.length} 行日志：`, ...tailLines, '', ...closing].join('\n')
+}
+
+/**
+ * 把一条提问投进**用户正在看的那个会话**，让 DSH 接手。
+ *
+ * sessionController 必须在请求时惰性获取：apply 那一刻它可能还没就绪，一次性 ctx.get 会拿到
+ * undefined 而且永不重试。会话列表按活跃度排序，第一个可用且非空白的会话就是用户正在看的那个。
+ */
+async function askDsh({ res, scope, ctx, text, requestId, summary }) {
+  const sessions = getService(scope || ctx, 'sessionController')
+  if (!sessions || typeof sessions.prompt !== 'function') {
+    return sendJson(res, 503, { ok: false, error: '当前 DSH 没有可用的会话服务' })
+  }
+  const abort = new AbortController()
+  try {
+    const listed = await sessions.list({}, abort.signal)
+    const rows = (listed && listed.items) || []
+    const target = rows.find((row) => row.agentAvailable && !row.blank)
+    if (!target) return sendJson(res, 409, { ok: false, error: '没有找到可以提问的会话' })
+    await sessions.prompt(
+      { requestId, sessionId: target.sessionId, mode: 'queue', content: [{ type: 'text', text }] },
+      abort.signal,
+    )
+    sendJson(res, 200, { ok: true, sessionId: target.sessionId, summary })
+  } catch (error) {
+    sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
+  }
+}
+
 // ---------------------------------------------------------------- job progress
 // 安装器画进度条的方式是「裸 \r 刷新同一行」——只按 \n 切分就会把整段刷新历史粘成一条巨长的
 // 乱行。那正是面板上看不到进度的原因：信息一直在采，只是被拼坏了。
@@ -1487,39 +1562,41 @@ export function apply(ctx, config) {
       sendJson(res, 200, { ok: true, job, jobs: [...state.jobs.values()] })
     })
 
-    // 让 DSH 自己解释一个工具：把一条提问投进最近活跃的那个会话。
+    // 让 DSH 接手两件事：解释一个工具（body.id），或者**诊断一个失败/卡住的任务**（body.jobId）。
+    // 后者是用户在详情里按"让 DSH 帮我看看"时用的——日志只弹出到详情里是不够的，
+    // 用户要的是有人真的来解决它。
     // sessionController 必须在请求时惰性获取——apply 那一刻它可能还没就绪，
     // 一次性 ctx.get 会拿到 undefined 并且永不重试。
     register('/dsh-dev-env/api/explain', async (req, res) => {
       if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
       const body = await readJson(req)
+
+      // 求助模式：把这条任务的实际状态写进提问。
+      if (body.jobId) {
+        const job = state.jobs.get(body.jobId)
+        if (!job) return sendJson(res, 404, { ok: false, error: `未知的任务：${body.jobId}` })
+        const data = await scan(state)
+        const item = data.items.find((entry) => entry.id === job.itemId) ?? {
+          id: job.itemId,
+          name: job.name,
+          nameEn: null,
+        }
+        const text = jobHelpPrompt(job, item, body.lang)
+        return askDsh({ req, res, scope, ctx, text, requestId: `dev-env-help-${randomUUID()}`, summary: `已让 DSH 诊断任务 ${job.id}` })
+      }
+
       const data = await scan(state)
       const item = data.items.find((entry) => entry.id === body.id)
       if (!item) return sendJson(res, 404, { ok: false, error: `未知的条目：${body.id}` })
-      const sessions = getService(scope || ctx, 'sessionController')
-      if (!sessions || typeof sessions.prompt !== 'function') {
-        return sendJson(res, 503, { ok: false, error: '当前 DSH 没有可用的会话服务' })
-      }
-      const abort = new AbortController()
-      try {
-        const listed = await sessions.list({}, abort.signal)
-        const rows = (listed && listed.items) || []
-        // list() 按活跃度排序，第一个可用且非空白的会话就是用户正在看的那个。
-        const target = rows.find((row) => row.agentAvailable && !row.blank)
-        if (!target) return sendJson(res, 409, { ok: false, error: '没有找到可以提问的会话' })
-        await sessions.prompt(
-          {
-            requestId: `dev-env-explain-${randomUUID()}`,
-            sessionId: target.sessionId,
-            mode: 'queue',
-            content: [{ type: 'text', text: explainPrompt(item, body.lang) }],
-          },
-          abort.signal,
-        )
-        sendJson(res, 200, { ok: true, sessionId: target.sessionId, summary: `已让 DSH 解释 ${item.name}` })
-      } catch (error) {
-        sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
-      }
+      await askDsh({
+        req,
+        res,
+        scope,
+        ctx,
+        text: explainPrompt(item, body.lang),
+        requestId: `dev-env-explain-${randomUUID()}`,
+        summary: `已让 DSH 解释 ${item.name}`,
+      })
     })
 
     return () => {
@@ -1744,6 +1821,7 @@ export const __test = {
   scanRoots,
   rootsView,
   normaliseUninstallCommand,
+  jobHelpPrompt,
 }
 
 // ----------------------------------------------------------------- http helpers

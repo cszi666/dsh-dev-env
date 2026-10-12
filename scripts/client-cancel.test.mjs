@@ -799,6 +799,46 @@ export async function runClientCancelTests(harness) {
       }
     })
 
+    // ------------------------------------------------------------ help hand-off
+    // A log that only appears inside the panel leaves the user where they started. This is the
+    // button that hands the facts to DSH, which can actually run diagnostics on the machine.
+
+    await harness.check('only a job that is stuck or failed offers the DSH hand-off', async () => {
+      const forStatus = async (status) => {
+        const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), { job: { status } })
+        clickButton(root, '详情')
+        return visibleTextOf(tree)
+      }
+      // A running job is included on purpose: something that hangs is exactly when help is wanted.
+      const failed = await forStatus('failed')
+      if (!failed.includes('让 DSH 帮我解决')) throw new Error(`a failed job should offer the hand-off, got: ${failed.slice(0, 200)}`)
+      const running = await forStatus('running')
+      if (!running.includes('让 DSH 帮我解决')) throw new Error(`a running job should offer it too, got: ${running.slice(0, 200)}`)
+      // A successful job has no problem to solve, so the button would only be noise.
+      const succeeded = await forStatus('succeeded')
+      if (succeeded.includes('让 DSH 帮我解决')) throw new Error('a succeeded job must not offer it')
+    })
+
+    await harness.check('the hand-off posts the job id, and says where it went', async () => {
+      let posted = null
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { id: 'job1', status: 'failed', error: '安装进程退出码 1' },
+        postRoutes: {
+          '/api/explain': (body) => {
+            posted = body
+            return { status: 200, body: { ok: true, sessionId: 's1', summary: '已让 DSH 诊断' } }
+          },
+        },
+      })
+      clickButton(root, '详情')
+      clickButton(tree, '🆘 让 DSH 帮我解决')
+      await flush()
+      if (!posted) throw new Error('the hand-off must reach /api/explain')
+      if (posted.jobId !== 'job1') throw new Error(`posted jobId ${JSON.stringify(posted.jobId)}`)
+      if (posted.lang !== 'zh') throw new Error(`posted lang ${JSON.stringify(posted.lang)}`)
+      if (!visibleTextOf(tree).includes('已交给 DSH')) throw new Error('the user should be told it was handed over')
+    })
+
     // ------------------------------------------------------------ extra folders
     // The "already installed? pick its folder" feature. Two halves matter: which rows offer the
     // picker at all, and what the user is told after choosing.
