@@ -9,6 +9,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A settings page for the plugin's own defaults**, registered at `settings.section` with its own id, so
+  it joins `account` / `general` / `models` / `plugins` / `agent-presets` instead of replacing any of them.
+  Each row states what the setting *changes* rather than only its name, because a switch whose effect
+  cannot be stated is worse than no switch. Saving is explicit and takes effect immediately — no restart —
+  and the page re-renders from the values the host **read back** rather than the ones submitted, so a
+  value rejected as the wrong type is visible instead of looking accepted.
+  - `download.preferOfficial` is not decorative: it is the one place a preference changes behaviour. With
+    it off, an install that names no source picks a verified domestic mirror instead of the official
+    origin — the difference between a download progressing and crawling when the origin is slow.
+    `download.showMirrors` affects only what the picker lists; hidden mirrors stay in the catalog.
+  - Stored at `<profile>/dsh-dev-env/settings.json` as plain, hand-editable JSON and **normalised** on
+    every read: unknown keys are dropped and a wrong-typed value falls back to its default. That matters
+    because `'false'` is truthy in JavaScript, so trusting the file would silently flip a setting while
+    looking as though it had been applied.
 - **A 交接 (Handover) tab beside 对话 and 轨迹, holding the lean state of the work.** A conversation
   always runs out of room eventually, and continuing in a new one needs the *state of the task* — what is
   left, what is in progress, what is done, what comes next — rather than a transcript, which is long and

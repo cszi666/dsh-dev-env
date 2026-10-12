@@ -20,6 +20,7 @@ import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, 
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
 import { normaliseHandoff, emptyHandoff, isHandoffEmpty, loadHandoffs, saveHandoffs, handoffPrompt } from './handoff.js'
+import { loadSettings, saveSettings, settingsView } from './settings.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -566,6 +567,8 @@ async function scan(state, options = {}) {
       // winget 是否真的能用：整个扫描只问一次，然后决定要不要把 winget 方案列出来。
       // force 时不缓存失败结果，所以用户装好 winget 后"重新扫描"就能立刻看到它出现。
       const wingetOk = await wingetReady()
+      // 用户设置每次扫描读一次：设置文件是给人手改的，缓存它只会让"改了没生效"变得难以解释。
+      const settings = loadSettings(settingsFile())
 
       const items = await Promise.all(
         CATALOG.map(async (entry, index) => {
@@ -587,13 +590,15 @@ async function scan(state, options = {}) {
             // 面板据此决定"选文件夹"这个入口显不显示（对注册表/PATH 类条目它毫无用处）。
             hint: describeProbeHint(entry),
             install: entry.install ?? {},
-            plans: plansFor(entry, { wingetReady: wingetOk }).map((plan) => ({
+            plans: plansFor(entry, { wingetReady: wingetOk, settings }).map((plan) => ({
               mode: plan.mode,
               label: plan.label,
               url: plan.url ?? null,
               note: plan.note ?? null,
               // 来源列表要能到面板：否则"换源"下拉无从渲染。只有我们自己下载的方案才有它。
               sources: plan.sources ?? null,
+              // 面板在"不指定来源"时（一键补齐 + 倒计时自动开始）用它，而不是自己猜第一个。
+              defaultSource: plan.defaultSource ?? null,
             })),
           }
           // 卸载方式只对**已安装**的条目计算，而且只在真有时才给：面板因此不需要自己判断
@@ -657,9 +662,9 @@ async function scan(state, options = {}) {
 // ----------------------------------------------------------------- install
 
 /** 一个下载条目的可选来源，供面板显示"换源"下拉。没有列表（单来源）时返回 null。 */
-function downloadSourcesOf(download) {
+function downloadSourcesOf(download, settings) {
   if (!Array.isArray(download?.sources)) return null
-  return download.sources.map((entry) => ({
+  const rows = download.sources.map((entry) => ({
     name: entry.name,
     label: entry.label ?? entry.name,
     host: (() => {
@@ -670,6 +675,27 @@ function downloadSourcesOf(download) {
       }
     })(),
   }))
+  // "不显示国内镜像"只影响**呈现**，不改目录：被隐藏的源仍然写在 catalog 里，随时可以打开。
+  if (settings && settings['download.showMirrors'] === false) {
+    return rows.filter((row) => /^(apache|nodejs|pythonorg|curlse)$/.test(row.name))
+  }
+  return rows
+}
+
+/**
+ * 不指定来源时该用哪一个——这是 `download.preferOfficial` 唯一**真正改变行为**的地方。
+ *
+ * 打开（默认）：用第一个源，也就是官方站。关掉：优先国内镜像，源站慢的时候更快。
+ * 返回 null 表示"让 resolveDownload 走它自己的默认顺序"。
+ */
+function pickDefaultSource(download, settings) {
+  if (!Array.isArray(download?.sources)) return null
+  if (settings && settings['download.preferOfficial'] === false) {
+    // 顺序仍然来自 catalog，所以"哪一个是镜像"不需要在这里再定义一次。
+    const mirror = download.sources.find((entry) => !/^(apache|nodejs|pythonorg|curlse)$/.test(entry.name))
+    if (mirror) return mirror.name
+  }
+  return null
 }
 
 /**
@@ -738,7 +764,9 @@ function plansFor(item, options = {}) {
       download: source.download,
       // 可选来源（官方 + 国内镜像）。面板据此显示"换源"下拉；只有我们自己下载的条目才有它，
       // 因为 winget / pip / npm 怎么取包不由我们决定。
-      sources: downloadSourcesOf(source.download),
+      sources: downloadSourcesOf(source.download, options.settings),
+      // 不指定来源时的默认来源。由 `download.preferOfficial` 决定，是那个设置唯一真正生效的地方。
+      defaultSource: pickDefaultSource(source.download, options.settings),
       note: source.downloadNote ?? null,
     })
   }
@@ -807,6 +835,13 @@ function handoffsFile() {
   const file = rootsFile()
   if (!file) return null
   return path.join(path.dirname(file), 'handoffs.json')
+}
+
+/** 用户设置的位置，规则同上。 */
+function settingsFile() {
+  const file = rootsFile()
+  if (!file) return null
+  return path.join(path.dirname(file), 'settings.json')
 }
 
 /** 解压一个 zip。用系统自带的 tar.exe（Win10 1803+），不额外依赖 7-Zip。 */
@@ -1609,6 +1644,16 @@ export function apply(ctx, config) {
         if (!chosen) return sendJson(res, 400, { ok: false, error: `这个方案没有名为 ${body.source} 的下载来源` })
         plan.source = chosen.name
         plan.sourceLabel = `${chosen.label}（${chosen.host ?? '-'}）`
+      } else if (plan.mode === 'download') {
+        // 没指定来源：按用户设置挑默认源，而不是无条件用第一个。
+        // 这不只是"排序"——它决定源站慢的时候会不会用国内镜像，所以必须真的接上。
+        const preferred = pickDefaultSource(plan.download, loadSettings(settingsFile()))
+        if (preferred) {
+          plan.source = preferred
+          const available = downloadSourcesOf(plan.download)
+          const chosen = available?.find((entry) => entry.name === preferred)
+          plan.sourceLabel = chosen ? `${chosen.label}（${chosen.host ?? '-'}）` : preferred
+        }
       }
       const job = startJob(state, item, plan)
       sendJson(res, 200, { ok: true, job, plans: item.plans })
@@ -1904,6 +1949,25 @@ export function apply(ctx, config) {
       })
     })
 
+    // 用户设置：读取与保存。设置页（settings.section）用它渲染，其余功能用它决定默认行为。
+    register('/dsh-dev-env/api/settings', async (req, res) => {
+      const method = (req.method || 'GET').toUpperCase()
+      const file = settingsFile()
+      if (method === 'GET') {
+        const url = new URL(req.url || '/', 'http://localhost')
+        return sendJson(res, 200, { ok: true, settings: settingsView(file, url.searchParams.get('lang')) })
+      }
+      if (method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET / POST only' })
+      const body = await readJson(req)
+      // 只写入已知键（normaliseSettings 会丢弃其余），所以页面无法把任意结构塞进这个文件。
+      if (!saveSettings(file, body.values)) {
+        return sendJson(res, 500, { ok: false, error: `保存失败：${file || '(没有可用的存储位置)'}` })
+      }
+      // 保存后读回一次，让调用方看到**实际生效**的值而不是它提交的值——两者可能不同（类型不符会被
+      // 回落到默认），而调用方需要知道这一点。
+      sendJson(res, 200, { ok: true, settings: settingsView(file, body.lang) })
+    })
+
     return () => {
       for (const dispose of disposers) {
         try {
@@ -2131,6 +2195,8 @@ export const __test = {
   wingetReady,
   jobHandoffPrompt,
   sessionIdOf,
+  pickDefaultSource,
+  downloadSourcesOf,
 }
 
 // ----------------------------------------------------------------- http helpers

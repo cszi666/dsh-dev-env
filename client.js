@@ -141,6 +141,10 @@ window.__ModuleLoader__.load({
       handoffSaved: '已保存',
       handoffSendCurrent: '投给当前对话，从这里接着做',
       handoffNoSession: '暂时拿不到这个对话的身份，所以无法读写它的交接。',
+      settingsTitle: 'Dev Env 设置',
+      settingsIntro: '这些是默认行为。每一项都写明它会改变什么；改动保存后立即生效，不需要重启。',
+      settingsSave: '保存设置',
+      settingsSaved: '已保存',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -261,6 +265,10 @@ window.__ModuleLoader__.load({
       handoffSaved: 'Saved',
       handoffSendCurrent: 'Send to the current conversation and continue from here',
       handoffNoSession: 'This conversation has no identity available right now, so its handover cannot be read or written.',
+      settingsTitle: 'Dev Env settings',
+      settingsIntro: 'These are defaults. Each one says what it changes; saving takes effect immediately, with no restart.',
+      settingsSave: 'Save settings',
+      settingsSaved: 'Saved',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -706,6 +714,116 @@ window.__ModuleLoader__.load({
 .dsh-de-hf{margin-top:10px}
 .dsh-de-hflabel{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
 .dsh-de-hflist{width:100%;box-sizing:border-box;resize:vertical;font:inherit;font-size:12px;line-height:1.5;padding:6px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+`
+
+    // ------------------------------------------------------------ settings page
+
+    /**
+     * 设置页（注册进 `settings.section`）。
+     *
+     * 一页而不是往 General 里塞几行：这些设置是**一组**默认行为，放在一起才看得出它们怎样互相影响
+     * （比如"优先官方源"与"显示国内镜像"）。每一项都显示一句**它会改变什么**——一个说不清的开关
+     * 比没有这个开关更糟。
+     */
+    function DevEnvSettingsSection() {
+      const [view, setView] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      const [saved, setSaved] = React.useState(false)
+
+      React.useEffect(() => {
+        let alive = true
+        api(`/settings?lang=${currentLang}`)
+          .then((payload) => {
+            if (alive) setView(payload.settings)
+          })
+          .catch((err) => {
+            if (alive) setError(String((err && err.message) || err))
+          })
+        return () => {
+          alive = false
+        }
+      }, [])
+
+      if (!view) {
+        return h('div', { className: 'dsh-de-settings' }, h('div', { className: 'dsh-de-msg' }, error || t('loading')))
+      }
+
+      const set = (key, value) => {
+        setSaved(false)
+        setView((current) =>
+          Object.assign({}, current, { values: Object.assign({}, current.values, { [key]: value }) }),
+        )
+      }
+
+      const save = async () => {
+        try {
+          const payload = await api('/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values: view.values, lang: currentLang }),
+          })
+          // 用**读回**的值刷新：类型不符的键会被回落到默认，界面必须显示实际生效的那个，
+          // 否则用户会以为自己的值被接受了。
+          setView(payload.settings)
+          setSaved(true)
+          setError(null)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      return h(
+        'div',
+        { className: 'dsh-de-settings' },
+        h('style', null, SETTINGS_CSS),
+        h(
+          'div',
+          { className: 'dsh-de-sethead' },
+          h('h2', null, t('settingsTitle')),
+          saved ? h('span', { className: 'dsh-de-ok' }, t('settingsSaved')) : null,
+          h('span', { className: 'dsh-de-spacer' }),
+          h('button', { className: 'dsh-de-btn', onClick: save }, t('settingsSave')),
+        ),
+        h('div', { className: 'dsh-de-pickq' }, t('settingsIntro')),
+        error ? h('div', { className: 'dsh-de-err' }, error) : null,
+        view.groups.map((group) =>
+          h(
+            'div',
+            { className: 'dsh-de-setgroup', key: group.id },
+            h('div', { className: 'dsh-de-setgrouptitle' }, group.label),
+            group.items.map((item) =>
+              h(
+                'div',
+                { className: 'dsh-de-setrow', key: item.key },
+                h(
+                  'label',
+                  { className: 'dsh-de-setlabel' },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: Boolean(view.values[item.key]),
+                    onChange: (event) => set(item.key, event.target.checked),
+                  }),
+                  h('span', null, item.label),
+                ),
+                h('div', { className: 'dsh-de-setwhy' }, item.why),
+                h('div', { className: 'dsh-de-setkey' }, item.key),
+              ),
+            ),
+          ),
+        ),
+      )
+    }
+
+    const SETTINGS_CSS = `
+.dsh-de-settings{padding:16px 18px;font-size:13px;color:var(--dsw-alias-label-primary);overflow:auto;height:100%;box-sizing:border-box}
+.dsh-de-sethead{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.dsh-de-sethead h2{margin:0;font-size:14px;font-weight:600}
+.dsh-de-setgroup{margin-top:16px}
+.dsh-de-setgrouptitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
+.dsh-de-setrow{padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-de-setlabel{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
+.dsh-de-setwhy{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin-top:4px}
+.dsh-de-setkey{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.65;margin-top:3px}
 `
 
     // ------------------------------------------------------------ sidebar icon
@@ -1802,6 +1920,17 @@ window.__ModuleLoader__.load({
           )
         } catch {
           /* 没有这个槽位（旧版本 DSH）就退化为"只有面板"，不影响其余功能 */
+        }
+        // 设置页：加一个**自己的** section（id 用自己的，才不会顶掉 account/general/models…）。
+        try {
+          ctx.slots.inject('settings.section', () =>
+            ctx.slots.register(
+              { name: 'settings.section', id: 'dev-env', order: 25, locale: NS, label: () => t('settingsTitle') },
+              DevEnvSettingsSection,
+            ),
+          )
+        } catch {
+          /* 没有这个槽位（旧版本 DSH）就退化为"改 settings.json"，功能不受影响 */
         }
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(

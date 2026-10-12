@@ -11,7 +11,7 @@
  * bundle patch and the client entry.
  */
 
-import { mkdirSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, statSync } from 'node:fs'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -41,6 +41,7 @@ import {
 } from '../paths.js'
 import { describeProbeHint } from '../roots.js'
 import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt } from '../handoff.js'
+import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView } from '../settings.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
 
@@ -1149,6 +1150,105 @@ check('neither dictionary declares a key twice', () => {
     }
     assert(seen.size > 20, `${lang} dictionary looks too small to be real (${seen.size} keys) — did the bounds slip?`)
   }
+})
+
+// ------------------------------------------------------------------ user settings
+console.log('\nuser settings')
+
+check('settings fall back to defaults, and reject values of the wrong type', () => {
+  // The settings file is text a user can edit by hand, so a string where a boolean belongs is a real
+  // possibility. `'false'` is truthy in JS, so accepting it silently would flip a setting while looking
+  // like it had been applied — so the file is normalised rather than trusted.
+  const defaults = defaultSettings()
+  assert(Object.keys(defaults).length >= 4, `expected several settings, got ${Object.keys(defaults).length}`)
+  for (const [key, value] of Object.entries(defaults)) {
+    assert(typeof value === 'boolean', `${key} should default to a boolean, got ${typeof value}`)
+  }
+
+  const normalised = normaliseSettings({
+    'download.preferOfficial': 'false', // a string, not a boolean -> must not be applied as-is
+    'handoff.tagOnGenerate': true,
+    'not.a.setting': 'ignored',
+  })
+  assert(normalised['download.preferOfficial'] === false, 'the literal "false" is accepted explicitly')
+  assert(normalised['handoff.tagOnGenerate'] === true, 'a real boolean passes through')
+  assert(!('not.a.setting' in normalised), 'unknown keys must be dropped, not stored')
+  assert(
+    Object.keys(normalised).length === Object.keys(defaults).length,
+    'the stored shape must stay exactly the known keys',
+  )
+
+  // Junk input must not throw: this file is read at the start of every scan.
+  for (const junk of [null, undefined, 42, 'text', [], { 'download.preferOfficial': 1 }]) {
+    const row = normaliseSettings(junk)
+    assert(row['download.preferOfficial'] === true, `${JSON.stringify(junk)} should fall back to the default`)
+  }
+})
+
+check('settings round-trip through a file, and a corrupt file falls back', () => {
+  const defaults = defaultSettings()
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-settings-'))
+  try {
+    const file = path.join(dir, 'settings.json')
+    assert(loadSettings(file)['download.preferOfficial'] === true, 'a missing file means defaults')
+
+    assert(saveSettings(file, { 'download.preferOfficial': false, 'handoff.showAdvanced': true }), 'save should work')
+    const back = loadSettings(file)
+    assert(back['download.preferOfficial'] === false, 'the saved value should come back')
+    assert(back['handoff.showAdvanced'] === true, 'every saved value should come back')
+    assert(back['handoff.tagOnGenerate'] === false, 'an unsaved key keeps its default')
+
+    // A truncated or hand-mangled file must not take the plugin down with it.
+    writeFileSync(file, '{ this is not json', 'utf8')
+    assert(loadSettings(file)['download.preferOfficial'] === true, 'a corrupt file falls back to defaults')
+
+    // The view is what the settings page renders, so every item needs a label and a reason.
+    const view = settingsView(file, 'zh')
+    assert(view.groups.length >= 2, 'settings should be grouped')
+    const items = view.groups.flatMap((group) => group.items)
+    assert(items.length === Object.keys(defaults).length, 'every setting should appear exactly once')
+    for (const item of items) {
+      assert(item.label && item.why, `${item.key} needs a label and a why`)
+      assert(typeof item.value === 'boolean', `${item.key} should carry its current value`)
+      assert(typeof item.default === 'boolean', `${item.key} should carry its default`)
+    }
+    const en = settingsView(file, 'en')
+    for (const item of en.groups.flatMap((group) => group.items)) {
+      assert(/[A-Za-z]/.test(item.label) && /[A-Za-z]/.test(item.why), `${item.key} needs English copy`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('preferOfficial actually changes which source is taken by default', () => {
+  // A setting that renders but changes nothing is worse than no setting, so this is pinned by name.
+  const download = {
+    sources: [
+      { name: 'apache', label: 'Apache 官方 (dlcdn)', listing: 'https://dlcdn.apache.org/x/' },
+      { name: 'tuna', label: '清华 TUNA', listing: 'https://mirrors.tuna.tsinghua.edu.cn/apache/x/' },
+    ],
+  }
+  assert(
+    __test.pickDefaultSource(download, { 'download.preferOfficial': true }) === null,
+    'with preferOfficial on no override is applied — the catalog order already puts the official first',
+  )
+  assert(
+    __test.pickDefaultSource(download, { 'download.preferOfficial': false }) === 'tuna',
+    'with preferOfficial off, a mirror is chosen',
+  )
+  assert(
+    __test.pickDefaultSource({ sources: [{ name: 'nodejs', label: 'x', listing: 'https://nodejs.org/dist/' }] },
+      { 'download.preferOfficial': false }) === null,
+    'a single-source entry must not invent a mirror to prefer',
+  )
+  assert(__test.pickDefaultSource({ direct: 'https://x/y.zip' }, {}) === null, 'a single source has no choice')
+
+  // showMirrors only affects presentation, and must not empty a list that has nothing else.
+  const shown = __test.downloadSourcesOf(download, { 'download.showMirrors': true })
+  assert(shown.length === 2, 'both sources should be offered by default')
+  const hidden = __test.downloadSourcesOf(download, { 'download.showMirrors': false })
+  assert(hidden.length === 1 && hidden[0].name === 'apache', 'hiding mirrors leaves the official source')
 })
 
 // ------------------------------------------------------------------ packaging
