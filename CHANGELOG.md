@@ -48,6 +48,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **One-click fill, and a tag chooser.** The 交接 tab can now ask this conversation's model to write the
+  handover itself, and tag it on demand.
+  - **Fill works through a tool, not through reading a reply.** DSH's `prompt` is one-way: the model's
+    answer is another message and a plugin cannot read it back, so "post a prompt and collect the
+    summary" is not available. DSH's own compaction works the same way — it replaces a span of history
+    rather than returning text — so the plugin registers `dev_env_handoff_write` and the prompt asks for
+    that call. The content lands in the project record and the panel picks it up on its next poll.
+  - **The tool takes its session from `exec.agent.id`, not from the initiator.** `execute(args, exec)`
+    receives the run context, whose `agent` is the agent the call belongs to. Reading the initiator was
+    the obvious-looking shortcut and it is wrong precisely in this flow, because the turn is started by
+    the plugin: it would write the record under the wrong project, and another project would then read it
+    as its own material. A guard asserts the tool never falls back to it.
+  - **Choosing `compact` when compaction is unavailable reports an error instead of quietly using
+    `current`.** The two differ in cost — compaction rewrites this conversation's history — so
+    substituting one for the other would do something the user did not agree to.
+  - A `GET /api/handoff/capability` probe reports what this deployment can actually do, so the page can
+    say whether the compact route exists rather than offering a control that fails.
+  - **Tags are chosen by the user, all or some, defaulting to all.** `handoff.tagOnGenerate` sets only the
+    initial state of that choice; the plugin never writes a tag on its own. The candidate list lives in
+    one place so the UI and the docs cannot drift apart.
 - **A settings page for the plugin's own defaults**, registered at `settings.section` with its own id, so  it joins `account` / `general` / `models` / `plugins` / `agent-presets` instead of replacing any of them.
   Each row states what the setting *changes* rather than only its name, because a switch whose effect
   cannot be stated is worse than no switch. Saving is explicit and takes effect immediately — no restart —

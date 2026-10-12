@@ -1434,6 +1434,38 @@ check('records round-trip, and a file in the pre-existing session format still l
   }
 })
 
+check('the handoff-writing tool takes its session from the tool call, not the initiator', () => {
+  // A record keyed by the wrong project is worse than no record: another project would read it as its
+  // own material. The session has to come from `exec.agent.id` — the agent the call belongs to — because
+  // `ctx.agents.currentInitiator()` need not be that agent when the plugin itself started the turn, which
+  // is exactly how the one-click fill prompt is delivered. Reading the source is the only way to guard a
+  // property like this from a unit test, and it is worth the bluntness.
+  const source = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  const start = source.indexOf("name: 'dev_env_handoff_write'")
+  assert(start > 0, 'the handoff-writing tool should exist')
+  const body = source.slice(start, start + 4000)
+  assert(/async execute\(args, exec\)/.test(body), 'its execute should receive the run context')
+  assert(/exec\.agent/.test(body), 'it should read the agent from the run context')
+  assert(!/currentInitiator/.test(body), 'it must not fall back to the initiator, which may be another session')
+})
+
+check('the fill prompt asks for the tool call, and names DSH\'s five sections', () => {
+  // The point of one-click fill is that the model writes the record itself. A prompt that only asked for
+  // a summary would produce a nice message and save nothing, so the tool call has to be the instruction,
+  // not a suggestion.
+  for (const [lang, needles] of [
+    ['zh', ['dev_env_handoff_write', '工具调用', '1. Task Overview', '2. Current State', '3. Important Discoveries', '4. Next Steps', '5. Context to Preserve']],
+    ['en', ['dev_env_handoff_write', 'tool call', '1. Task Overview', '5. Context to Preserve']],
+  ]) {
+    const text = __test.handoffFillPrompt(lang)
+    for (const needle of needles) assert(text.includes(needle), `${lang} fill prompt is missing ${needle}`)
+    // Every field the tool accepts should be named, or the model has to guess where content goes.
+    for (const field of ['summary', 'done', 'discoveries', 'todo', 'doing', 'next', 'preserve']) {
+      assert(text.includes(field), `${lang} fill prompt should name the ${field} field`)
+    }
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

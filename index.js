@@ -967,6 +967,80 @@ async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId }) 
 }
 
 /**
+ * 请模型写交接的提示词。
+ *
+ * 节名与结构与 DSH 自己的 `DEFAULT_SUMMARY_PROMPT`（CompactionControl）一致——那份要求五节、
+ * 并说明它的用途是"对话历史将被这段摘要替换"。交接做的是同一件事，所以用同一套结构，模型不需要
+ * 为这个插件另学一种格式。这里只是把那份要求指到本插件的写入工具上。
+ */
+function handoffFillPrompt(lang) {
+  return lang === 'en'
+    ? [
+        'Write a continuation handover for the work in this conversation, then save it by calling the `dev_env_handoff_write` tool. Do not just print it — the tool call is what records it.',
+        '',
+        'Use the same five-part structure DSH uses for a compaction summary, because this handover is meant to be read at the start of another conversation in place of the history:',
+        '1. Task Overview — the user\'s core request and success criteria, and any constraints they stated',
+        '2. Current State — what is done, files created or changed with paths, key artifacts (pass as `done`)',
+        '3. Important Discoveries — technical constraints, decisions and their rationale, errors and how they were resolved, approaches that did not work (pass as `discoveries`)',
+        '4. Next Steps — specific remaining actions in priority order (`todo`), what is in progress (`doing`), and the immediate next step (`next`)',
+        '5. Context to Preserve — user preferences and style requirements, non-obvious domain details, promises made (pass as `preserve`)',
+        '',
+        'Be concise but complete. The point is that whoever continues this work does not have to re-derive it or repeat a mistake. Write the content in the language the user has been using.',
+      ].join('\n')
+    : [
+        '请把这段对话里的工作写成一份交接（continuation handover），然后**调用 `dev_env_handoff_write` 工具保存它**。不要只打印出来——真正记录下来的那一步是工具调用。',
+        '',
+        '请使用与 DSH 压缩摘要相同的五节结构，因为这份交接的用途就是"在另一个对话的开头代替这段历史被读到"：',
+        '1. Task Overview —— 用户的核心请求与成功标准，以及明确提出的约束（`summary`）',
+        '2. Current State —— 已经完成了什么、涉及的文件与路径、关键产出物（`done`）',
+        '3. Important Discoveries —— 技术约束、决策与理由、遇到的错误及如何解决、试过但不成的方法（`discoveries`）',
+        '4. Next Steps —— 按优先级排列的具体待办（`todo`）、正在进行中的项（`doing`）、紧接着的下一步（`next`）',
+        '5. Context to Preserve —— 用户偏好与风格要求、不明显的领域细节、做过的承诺（`preserve`）',
+        '',
+        '要简洁但完整。它的价值在于：接着做的人不必重新推导，也不必重犯同一个错误。内容请用用户一直在用的语言写。',
+      ].join('\n')
+}
+
+/**
+ * 一键填充所需的能力探测。
+ *
+ * A（用当前对话的模型总结）只需要 sessionController，那个已经在用。
+ * B（用 compaction 另起一次总结）需要 `compaction` 服务，以及一个带 `session` 与 `options` 的
+ * `CompactionAgentContext`——`agents.get(sessionId)` 可能就是它，但这**必须实测**：
+ * 拿不到就不能提供 B，否则用户选了一个会静默失败的选项。
+ */
+async function probeAutoFill(ctx, sessionId) {
+  const report = { sessions: false, compaction: false, agent: false, session: false, canCompact: false, detail: [] }
+  const sessions = getService(ctx, 'sessionController')
+  report.sessions = Boolean(sessions && typeof sessions.list === 'function')
+  if (!report.sessions) report.detail.push('sessionController 不可用')
+
+  const compaction = getService(ctx, 'compaction')
+  report.compaction = Boolean(compaction && typeof compaction.compactNow === 'function')
+  if (!report.compaction) report.detail.push('compaction 服务不可用（B 不可用）')
+
+  const agents = getService(ctx, 'agents')
+  if (agents && typeof agents.get === 'function' && sessionId) {
+    try {
+      const agent = agents.get(sessionId)
+      report.agent = Boolean(agent)
+      // compactNow 的契约要 `agent.session` 与 `agent.options`。
+      report.session = Boolean(agent && agent.session && typeof agent.session.append === 'function')
+      report.canCompact = report.compaction && report.agent && report.session
+      if (agent && !report.session) report.detail.push('agent 上没有可用的 session 对象')
+    } catch (error) {
+      report.detail.push(`agents.get 抛错：${String((error && error.message) || error).slice(0, 80)}`)
+    }
+  } else if (sessionId) {
+    report.detail.push('agents 服务不可用或没有 get()')
+  }
+
+  // A 始终可用（只要会话服务在），因为它只是把一段文本作为提问投进对话。
+  report.canAutoFill = report.sessions
+  return report
+}
+
+/**
  * 一个会话属于哪个项目。
  *
  * 身份取自 `sessionController.list()` 给出的 `cwd`：那是"这段工作在哪里做"的唯一可靠来源。
@@ -1967,6 +2041,48 @@ export function apply(ctx, config) {
       sendJson(res, 200, { ok: true, project, record })
     })
 
+    // 能力探测：面板据此决定"A / B"里哪些是可用的，而不是给一个选了会静默失败的选项。
+    register('/dsh-dev-env/api/handoff/capability', async (req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const report = await probeAutoFill(scope || ctx, url.searchParams.get('sessionId') || '')
+      sendJson(res, 200, { ok: true, capability: report })
+    })
+
+    // 一键填充：请**这个对话的模型**把这段工作总结成交接，并调用工具写下来。
+    //
+    // 为什么是"请模型调用工具"而不是"投一段提示再读回复"：DSH 的 prompt 是单向的，模型的回答是
+    // 另一条消息，插件抓不回来。所以让模型把结果**交出来**，内容直接落进项目记录，面板下一次轮询
+    // 自然看到——这也正是 DSH 自己压缩上下文时的做法（它替换历史，而不是把文本还给调用方）。
+    register('/dsh-dev-env/api/handoff/fill', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId：不知道要总结哪个对话' })
+
+      const capability = await probeAutoFill(scope || ctx, sessionId)
+      const method = body.method === 'compact' ? 'compact' : 'current'
+      // 选了 B 但 B 不可用时**明确报错**，不静默退回 A：两者代价不同（B 会就地改写这段对话），
+      // 悄悄替换等于在用户没同意的情况下做了另一件事。
+      if (method === 'compact' && !capability.canCompact) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: `这个环境里 compaction 不可用，无法用压缩方式总结（${capability.detail.join('；') || '缺少服务'}）。可以改用"用当前对话总结"。`,
+        })
+      }
+
+      const text = handoffFillPrompt(body.lang)
+      return askDsh({
+        req,
+        res,
+        scope,
+        ctx,
+        text,
+        requestId: `dev-env-fill-${randomUUID()}`,
+        summary: '已请 DSH 把这段工作写成交接',
+        sessionId,
+      })
+    })
+
     // 把**某个项目**的交接投递给一个对话：这就是"到上限后无缝衔接"的执行动作。
     // 投递的是一份**项目资料**，而不是"某个对话的私产"——所以接手方可以是同一项目的另一个对话
     // （场景 1），也可以是另一个项目的对话来取用（场景 2、3）。
@@ -2210,6 +2326,99 @@ export function apply(ctx, config) {
     'dsh-dev-env: tool dev_env_job',
   )
 
+  // 让模型把**交接**写下来。这是"一键填充"能成立的唯一方式。
+  //
+  // 为什么需要它：DSH 的 prompt 是**单向**的——投进去之后模型的回答是另一条消息，插件抓不回来，
+  // 所以无法"投一段提示然后读回复"。DSH 自己的做法是让模型**调用工具**把结果交出来（compaction
+  // 也是替换历史，而不是把文本还给我）。所以这里注册一个写入动作：面板发一句提示，模型读完对话
+  // 后调用本工具，内容就落进了那份项目记录里，面板下一次轮询自然看到。
+  effect(
+    ctx,
+    () =>
+      ctx.tools.register({
+        name: 'dev_env_handoff_write',
+        description:
+          '把当前工作的交接（continuation summary）写入 dsh-dev-env 的项目记录，供之后在别的对话里接着做或供别的项目取用。按 DSH 压缩摘要的五节结构填写。只在用户要求生成/更新交接时调用。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            summary: { type: 'string', description: '1. Task Overview：用户的核心请求与成功标准、明确的约束' },
+            done: {
+              type: 'array',
+              items: { type: 'string' },
+              description: '2. Current State：已完成什么、涉及的文件与路径、产出物',
+            },
+            discoveries: { type: 'string', description: '3. Important Discoveries：技术约束、决策与理由、错误及解决、试过但不成的方法' },
+            todo: {
+              type: 'array',
+              items: { type: 'string' },
+              description: '4. Next Steps：具体待办，按优先级排列',
+            },
+            doing: { type: 'array', items: { type: 'string' }, description: '4. Next Steps：正在进行中的项' },
+            next: { type: 'string', description: '4. Next Steps：紧接着的下一步（一句话）' },
+            preserve: { type: 'string', description: '5. Context to Preserve：用户偏好与风格、不明显的领域细节、做过的承诺' },
+            projectPath: {
+              type: 'string',
+              description: '这条交接属于哪个项目目录。省略时按当前会话的工作目录判定。',
+            },
+          },
+          required: ['summary'],
+        },
+        output: {
+          schema: { type: 'object', additionalProperties: true },
+          render: (args, value) => [
+            {
+              type: 'text',
+              text: value && value.ok
+                ? `已写入 ${value.projectPath || value.projectKey} 的交接（${value.todo} 项待办 / ${value.done} 项已完成）。面板的「交接」页签会显示它。`
+                : `写入失败：${(value && value.error) || '未知原因'}`,
+            },
+          ],
+        },
+        async execute(args, exec) {
+          const input = args && typeof args === 'object' ? args : {}
+          // 会话身份取自**这次工具调用所属的 agent**（`exec.agent.id`），而不是"当前发起者"：
+          // 后者在由插件发起的那一轮里未必是目标会话，用它会把交接写到**错误的项目**上——
+          // 而写错项目的交接会被另一个项目读到。
+          const sessionId = (exec && exec.agent && exec.agent.id) || null
+          // 项目身份优先用模型明确给的目录，其次按**当前会话的工作目录**判定。
+          const project = input.projectPath
+            ? projectKeyOf(input.projectPath, sessionId)
+            : await projectForSession(ctx, sessionId)
+          const file = handoffsFile()
+          const { byProject } = loadRecords(file)
+          const previous = byProject[project.key]
+          const record = normaliseRecord(
+            {
+              // 保留已有标签：写入内容不该顺手抹掉用户打过的标签。
+              tags: previous ? previous.tags : [],
+              lastSessionId: sessionId,
+              summary: input.summary,
+              done: input.done,
+              notes: [input.discoveries, input.preserve].filter(Boolean).join('\n\n'),
+              todo: input.todo,
+              doing: input.doing,
+              next: input.next,
+            },
+            project,
+          )
+          byProject[project.key] = record
+          if (!saveRecords(file, byProject)) {
+            return { ok: false, error: `保存失败：${file || '(没有可用的存储位置)'}` }
+          }
+          return {
+            ok: true,
+            projectKey: project.key,
+            projectPath: project.path,
+            todo: record.handoff.todo.length,
+            done: record.handoff.done.length,
+          }
+        },
+      }),
+    'dsh-dev-env: tool dev_env_handoff_write',
+  )
+
   // 卸载时收掉仍在前台跑的安装进程
   return () => {
     for (const child of state.children) {
@@ -2251,6 +2460,8 @@ export const __test = {
   projectKeyOf,
   normaliseRecord,
   emptyRecord,
+  handoffFillPrompt,
+  probeAutoFill,
 }
 
 // ----------------------------------------------------------------- http helpers

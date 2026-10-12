@@ -126,6 +126,16 @@ window.__ModuleLoader__.load({
       handoffAuto: '交给当前对话',
       handoffProject: '所属项目',
       handoffScopeSession: '未能识别项目目录，暂按对话保存',
+      fillNow: '一键填充',
+      filling: '已请 DSH 生成…',
+      fillSent: '已请这个对话的模型总结；它调用工具写入后，这份记录会自动出现（可稍等再刷新）',
+      fillCompactUnavailable: '这个环境里 compaction 不可用，无法用压缩方式总结。请在设置里改用「用当前对话总结」。',
+      tagButton: '添加标签',
+      tagPick: '给这份交接打标签',
+      tagPickHint: '标签由你决定，插件不会自己打。全选会占用更多 token，但也让这份记录更容易被检索到。',
+      tagAll: '全部打上（默认）',
+      tagNone: '全部不打',
+      tagConfirm: '确认标签',
       handoffSent: '已交接',
       handoffNoJobs: '现在没有任务可以交接',
       handoffLoading: '正在读取会话…',
@@ -254,6 +264,16 @@ window.__ModuleLoader__.load({
       handoffAuto: 'Hand to the current conversation',
       handoffProject: 'Project',
       handoffScopeSession: 'no project directory recognised, kept per conversation',
+      fillNow: 'Fill from this conversation',
+      filling: 'Asked DSH to write it…',
+      fillSent: 'Asked this conversation to summarise; the record appears once the tool call lands (refresh in a moment)',
+      fillCompactUnavailable: 'Compaction is unavailable here, so it cannot summarise that way. Switch the setting to "summarise in this conversation".',
+      tagButton: 'Tag it',
+      tagPick: 'Tag this handover',
+      tagPickHint: 'Tags are your call; the plugin never adds them on its own. Tagging everything costs more tokens but makes the record easier to find later.',
+      tagAll: 'Tag everything (default)',
+      tagNone: 'Tag nothing',
+      tagConfirm: 'Save tags',
       handoffSent: 'Handed over',
       handoffNoJobs: 'There are no jobs to hand over right now',
       handoffLoading: 'Reading sessions…',
@@ -581,6 +601,26 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState(null)
       const [saved, setSaved] = React.useState(false)
       const [sent, setSent] = React.useState(null)
+      const [filling, setFilling] = React.useState(false)
+      const [filled, setFilled] = React.useState(false)
+      // 标签选择：{ open, picked }。用户按按钮决定，插件从不自己打标签。
+      const [tagChoice, setTagChoice] = React.useState(null)
+      // 设置（只读）：一键填充的方式、标签默认是否全选。
+      const [settings, setSettings] = React.useState(null)
+
+      React.useEffect(() => {
+        let alive = true
+        api(`/settings?lang=${currentLang}`)
+          .then((payload) => {
+            if (alive) setSettings((payload.settings || {}).values || {})
+          })
+          .catch(() => {
+            /* 读不到设置就按默认行为走，不影响交接本身 */
+          })
+        return () => {
+          alive = false
+        }
+      }, [])
 
       // 一次性自检：把组件实际收到的 props 形状打到控制台。会话身份的位置在不同版本里可能不同，
       // 与其猜，不如让第一次运行把事实说出来。
@@ -668,6 +708,55 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 一键填充：请这个对话的模型把工作写成交接。内容由模型通过工具落盘，面板轮询后自然看到。 */
+      const fill = async () => {
+        setFilling(true)
+        setError(null)
+        try {
+          // 先问能力：选 B 却不可用时必须**当场报错**，而不是静默用 A——两者代价不同。
+          const capability = await api(`/handoff/capability?sessionId=${encodeURIComponent(sessionId)}`)
+          const method = (settings && settings['handoff.autoFillMethod']) || 'current'
+          if (method === 'compact' && !(capability.capability || {}).canCompact) {
+            throw new Error(t('fillCompactUnavailable'))
+          }
+          await api('/handoff/fill', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, method, lang: currentLang }),
+          })
+          setFilled(true)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        } finally {
+          setFilling(false)
+        }
+      }
+
+      /**
+       * 打标签。**由用户按按钮决定全部或部分**，插件自己不填——
+       * `handoff.tagOnGenerate` 只决定这个选择的**初始状态**。
+       */
+      const openTags = () => {
+        const preset = settings && settings['handoff.tagOnGenerate'] === true ? TAG_CHOICES.map((row) => row.key) : []
+        setTagChoice({ open: true, picked: preset })
+      }
+
+      const saveTags = async () => {
+        const picked = (tagChoice && tagChoice.picked) || []
+        setTagChoice(null)
+        try {
+          const payload = await api('/handoff', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, record: Object.assign({}, record, { tags: picked }) }),
+          })
+          setProject(payload.project || project)
+          setRecord(payload.record || record)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
       const textField = (key, label, rows) =>
         h(
           'div',
@@ -708,8 +797,19 @@ window.__ModuleLoader__.load({
           saved ? h('span', { className: 'dsh-de-ok' }, t('handoffSaved')) : null,
           sent ? h('span', { className: 'dsh-de-ok' }, `${t('handoffSent')} → ${sent}`) : null,
           h('span', { className: 'dsh-de-spacer' }),
+          h('button', { className: 'dsh-de-btn', onClick: fill, disabled: filling }, filling ? t('filling') : t('fillNow')),
+          h('button', { className: 'dsh-de-btn', onClick: openTags }, t('tagButton')),
           h('button', { className: 'dsh-de-btn', onClick: save }, t('handoffSave')),
         ),
+        filled ? h('div', { className: 'dsh-de-ok' }, t('fillSent')) : null,
+        // 已打的标签显示出来，让人一眼知道这份记录带着什么用途标记。
+        record.tags && record.tags.length
+          ? h(
+              'div',
+              { className: 'dsh-de-pick' },
+              record.tags.map((tag) => h('span', { className: 'dsh-de-chip ok', key: tag }, tag)),
+            )
+          : null,
         h('div', { className: 'dsh-de-pickq' }, t('handoffHint')),
         // 显示这份记录属于哪个项目。用户必须知道自己在改哪个箱子——这正是"末影箱"与"私人笔记"
         // 的区别，藏起来会让人以为它是这个对话的私产。
@@ -732,8 +832,65 @@ window.__ModuleLoader__.load({
           { className: 'dsh-de-pick' },
           h('button', { className: 'dsh-de-btn', onClick: send }, t('handoffSendCurrent')),
         ),
+        // 标签选择。默认全选（或按设置），但**必须按按钮确认**——这是 token 与准确度的取舍点，
+        // 交给用户而不是插件替他决定。
+        tagChoice
+          ? h(
+              'div',
+              { className: 'dsh-de-modal' },
+              h(
+                'div',
+                { className: 'dsh-de-dialog' },
+                h('h2', null, t('tagPick')),
+                h('div', { className: 'dsh-de-pickq' }, t('tagPickHint')),
+                h(
+                  'div',
+                  { className: 'dsh-de-pick' },
+                  h(
+                    'button',
+                    { className: 'dsh-de-btn', onClick: () => setTagChoice({ open: true, picked: TAG_CHOICES.map((row) => row.key) }) },
+                    t('tagAll'),
+                  ),
+                  h('button', { className: 'dsh-de-btn', onClick: () => setTagChoice({ open: true, picked: [] }) }, t('tagNone')),
+                ),
+                TAG_CHOICES.map((choice) =>
+                  h(
+                    'label',
+                    { className: 'dsh-de-setlabel', key: choice.key },
+                    h('input', {
+                      type: 'checkbox',
+                      checked: tagChoice.picked.includes(choice.key),
+                      onChange: (event) =>
+                        setTagChoice((current) => ({
+                          open: true,
+                          picked: event.target.checked
+                            ? current.picked.concat(choice.key)
+                            : current.picked.filter((row) => row !== choice.key),
+                        })),
+                    }),
+                    h('span', null, `${currentLang === 'en' ? choice.en : choice.zh}  ·  ${choice.key}`),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'dsh-de-pick' },
+                  h('button', { className: 'dsh-de-btn', onClick: saveTags }, t('tagConfirm')),
+                  h('button', { className: 'dsh-de-btn', onClick: () => setTagChoice(null) }, t('pickSourceCancel')),
+                ),
+              ),
+            )
+          : null,
       )
     }
+
+    /** 用途标签的候选。**只在这里定义一次**，界面与文档都取它，免得两处清单漂移。 */
+    const TAG_CHOICES = [
+      { key: 'continuation', zh: '传承：接着往下做', en: 'Continuation: keep going from here' },
+      { key: 'project-material', zh: '项目资料：需求/功能/接口', en: 'Project material: requirements, features, interfaces' },
+      { key: 'reusable', zh: '可复用经验：做法与坑', en: 'Reusable: approaches and traps' },
+      { key: 'decision', zh: '决策记录：为什么这么选', en: 'Decisions: why this choice' },
+      { key: 'handover-open', zh: '仍待确认：未定的事', en: 'Still open: undecided points' },
+    ]
 
     /** 页签自己的样式。面板那份 CSS 是另一个座位的，不该互相依赖。 */
     const HANDOFF_CSS = `
