@@ -115,34 +115,36 @@ export function saveHandoffs(file, bySession) {
 export function handoffPrompt(handoff, lang) {
   const english = lang === 'en'
   if (isHandoffEmpty(handoff)) return null
-  // 每个段落各自成块，最后用**空行分隔段落**去拼。不要在段落内部写空行标记：那样某一段缺失时
-  // 它的空行会留下来，出现连续两个空行（jobHelpPrompt 与这里都踩过同一个坑）。
-  const list = (title, rows) => (rows.length ? [`${title}：`, ...rows.map((row) => `  - ${row}`)] : null)
-  const listEn = (title, rows) => (rows.length ? [`${title}:`, ...rows.map((row) => `  - ${row}`)] : null)
+  // 核心：用 **DSH 自带的压缩摘要格式**，而不是自己发明一套标记。
+  //
+  // 依据是 DSH 的 `DEFAULT_SUMMARY_PROMPT`（CompactionControl）——它要求模型产出五节、并
+  // "Wrap your summary in <summary></summary> tags"，用途写明是"对话历史将被这段摘要替换"。
+  // 交接要做的事**和它一模一样**，所以同构就意味着：新对话收到这份东西，等效于这段历史本来就是
+  // 这样被压缩进来的，模型不需要为它重新学一种格式。
+  //
+  // 节名刻意用英文，和 DSH 原文一致；正文可以是中文。这是 **format 与 content 分层**：
+  // 格式两侧都认得，内容各写各的语言。
+  // 五节照 DSH 原文的节名与顺序。缺的节宁可**留标题不写内容**，也不省略标题：DSH 的压缩摘要
+  // 总是五节齐全，节名缺失会让"这份东西是压缩摘要"这个信号变弱，而信号正是复用它格式的理由。
+  const nextSteps = [
+    ...handoff.doing.map((row) => `- in progress: ${row}`),
+    ...handoff.todo.map((row) => `- ${row}`),
+    ...(handoff.next ? [`- next: ${handoff.next}`] : []),
+  ]
+  const sections = [
+    ['1. Task Overview', handoff.summary ? [handoff.summary] : ['(not recorded)']],
+    ['2. Current State', handoff.done.length ? handoff.done.map((row) => `- ${row}`) : ['(not recorded)']],
+    ['3. Important Discoveries', handoff.notes ? [handoff.notes] : ['(not recorded)']],
+    ['4. Next Steps', nextSteps.length ? nextSteps : ['(not recorded)']],
+    ['5. Context to Preserve', [`Recorded in a dsh-dev-env handover${handoff.sessionId ? `: ${handoff.sessionId}` : ''}`]],
+  ]
 
-  const blocks = english
-    ? [
-        [`I am continuing work from another conversation, which has run out of room.`],
-        handoff.summary ? [`Where it stands: ${handoff.summary}`] : null,
-        listEn('Still to do', handoff.todo),
-        listEn('In progress', handoff.doing),
-        listEn('Already done', handoff.done),
-        handoff.next ? [`Next step planned: ${handoff.next}`] : null,
-        handoff.notes ? [`Notes worth keeping:`, handoff.notes] : null,
-        [`Treat the above as established context and continue from it. Do not re-derive what is already listed as done.`],
-      ]
-    : [
-        [`我在接着另一个对话继续做事，那个对话已经到上限了。`],
-        handoff.summary ? [`当前进展：${handoff.summary}`] : null,
-        list('还需要做', handoff.todo),
-        list('正在做', handoff.doing),
-        list('已经做完', handoff.done),
-        handoff.next ? [`下一步计划：${handoff.next}`] : null,
-        handoff.notes ? [`值得保留的备注：`, handoff.notes] : null,
-        [`请把以上当作已知背景，从这里接着往下做；已经在"已经做完"里的不要再重新推一遍。`],
-      ]
-  return blocks
-    .filter(Boolean)
-    .map((block) => block.join('\n'))
-    .join('\n\n')
+  // **只写一份**：内容全部在 `<summary>` 里，前面只留一句说明这块东西是什么、该怎么用。
+  // 第一版把内容先用自然语言列一遍、再在 summary 里列一遍，等于让模型把同一件事读两遍——
+  // 那正好和"不要重新理解一遍"相反。
+  const body = sections.map(([title, lines]) => [title, ...lines].join('\n')).join('\n\n')
+  const pointer = english
+    ? `I am continuing work from another conversation, which has run out of room. Its summary is below; treat it as established context, and do not re-derive what it lists as already done.`
+    : `我在接着另一个对话继续做事，那个对话已经到上限了。它的摘要在下面；请当作已知背景，其中"已做完"的部分不要再重新推一遍。`
+  return [pointer, '', '<summary>', body, '</summary>'].join('\n')
 }

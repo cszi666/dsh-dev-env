@@ -7,6 +7,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A handover is emitted as DSH's own compaction summary, not a private format.** The requirement was to
+  stop making the model re-learn how to read a handover, so the format question was answered by reading
+  DSH rather than by inventing markup: `DEFAULT_SUMMARY_PROMPT` (CompactionControl) asks for five numbered
+  sections — *Task Overview, Current State, Important Discoveries, Next Steps, Context to Preserve* —
+  wrapped in `<summary></summary>`, and states that the format exists so a conversation's history can be
+  **replaced** by it. A handover does exactly that job, so it now emits the same shape: the section names
+  are DSH's, in DSH's order, in English on both language paths, while the content stays in the writer's
+  language. Arriving in a new conversation it is indistinguishable from history compacted there. It also
+  covers more than the four fields did — scenario 2 and 3 material (requirements, features, interfaces,
+  and the lessons and traps worth reusing) belongs in sections 3 and 5, which the old wording had no
+  place for.
+  - The first draft printed the content twice, once as prose and again inside the summary. That is the
+    opposite of the requirement, since the reader would parse the same facts twice, so the preamble is now
+    one sentence saying what the block is and how to use it, and the summary is the only copy.
+  - A sparse handover still writes all five headings and marks the empty ones, because a missing section
+    name weakens the "this is a compaction summary" signal the whole change rests on.
+
 ### Added
 
 - **A settings page for the plugin's own defaults**, registered at `settings.section` with its own id, so

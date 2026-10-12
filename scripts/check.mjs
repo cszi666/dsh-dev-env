@@ -1100,32 +1100,25 @@ check('an empty handoff is recognised, and produces no prompt', () => {
   assert(!isHandoffEmpty(listOnly), 'a single todo should count as content')
 })
 
-check('the handoff prompt carries the lists and does not collapse its blank lines', () => {
-  // Same trap as the job help prompt: an absent optional line must not take its blank separator with
-  // it, or the sections run together and the text stops being scannable.
-  const handoff = normaliseHandoff(
-    {
-      summary: '卸载功能',
-      todo: ['注册表路径', '文档'],
-      doing: ['跑测试'],
-      done: ['后端计划函数'],
-      next: '提交',
-      notes: '注意 /I',
-    },
+check('the handoff prompt keeps its paragraphs apart', () => {
+  // Kept from the pre-DSH-format version, because the trap it guards is not about wording: an absent
+  // optional line used to take its blank separator with it, and after that was worked around, an absent
+  // section still left a doubled blank. The summary block must stay scannable either way.
+  const full = normaliseHandoff(
+    { summary: '卸载功能', todo: ['注册表路径'], doing: ['跑测试'], done: ['后端'], next: '提交', notes: '注意 /I' },
     's-1',
   )
-  for (const [lang, needles] of [
-    ['zh', ['接着另一个对话', '当前进展：卸载功能', '还需要做', '注册表路径', '正在做', '跑测试', '已经做完', '后端计划函数', '下一步计划：提交', '注意 /I', '不要再重新推一遍']],
-    ['en', ['continuing work from another conversation', 'Still to do', 'Already done', 'Next step planned', 'Do not re-derive']],
-  ]) {
-    const text = handoffPrompt(handoff, lang)
-    for (const needle of needles) assert(text.includes(needle), `${lang} handoff prompt is missing ${needle}`)
-    assert(/\n\n/.test(text), `${lang} handoff prompt should keep a blank line between sections`)
-  }
-  // With no notes the prompt must still be readable: no doubled blanks where a section was skipped.
-  const noNotes = normaliseHandoff({ summary: '只有一句', todo: ['一件事'] }, 's-1')
-  const text = handoffPrompt(noNotes, 'zh')
-  assert(!/\n\n\n/.test(text), `absent sections must not leave triple newlines:\n${text}`)
+  const text = handoffPrompt(full, 'zh')
+  assert(/\n\n/.test(text), 'sections should be separated by a blank line')
+  assert(!/\n\n\n/.test(text), `no section may leave a doubled blank line:\n${text}`)
+
+  // A sparse handoff must not produce tripled newlines where sections were skipped either.
+  const sparse = handoffPrompt(normaliseHandoff({ summary: '只有一句' }, 's-2'), 'zh')
+  assert(!/\n\n\n/.test(sparse), `absent sections must not leave triple newlines:\n${sparse}`)
+
+  // The block markers sit on their own lines, which is what makes the block recognisable.
+  assert(/\n<summary>\n/.test(text), '<summary> should be on its own line')
+  assert(/\n<\/summary>/.test(text), '</summary> should be on its own line')
 })
 
 check('neither dictionary declares a key twice', () => {
@@ -1249,6 +1242,53 @@ check('preferOfficial actually changes which source is taken by default', () => 
   assert(shown.length === 2, 'both sources should be offered by default')
   const hidden = __test.downloadSourcesOf(download, { 'download.showMirrors': false })
   assert(hidden.length === 1 && hidden[0].name === 'apache', 'hiding mirrors leaves the official source')
+})
+
+check('the handoff prompt is a DSH compaction summary, not a private format', () => {
+  // The requirement was "do not make the model learn a new format". DSH's own compaction prompt
+  // (DEFAULT_SUMMARY_PROMPT in CompactionControl) asks for five numbered sections wrapped in
+  // <summary></summary>, and says that format exists so conversation history can be *replaced* by it.
+  // A handover is the same job, so it emits the same shape and needs no new vocabulary on either side.
+  const handoff = normaliseHandoff(
+    {
+      summary: '卸载功能',
+      todo: ['注册表路径', '文档'],
+      doing: ['跑测试'],
+      done: ['后端计划函数'],
+      next: '提交',
+      notes: '注意 /I',
+    },
+    's-1',
+  )
+  const text = handoffPrompt(handoff, 'zh')
+  assert(text.includes('<summary>') && text.includes('</summary>'), 'the summary block must be present')
+  // The section names are DSH's, in DSH's order, in English on both language paths.
+  const sections = ['1. Task Overview', '2. Current State', '3. Important Discoveries', '4. Next Steps', '5. Context to Preserve']
+  let cursor = -1
+  for (const section of sections) {
+    const at = text.indexOf(section)
+    assert(at > cursor, `${section} must be present and in order (found at ${at}, previous ${cursor})`)
+    cursor = at
+  }
+  const inside = text.slice(text.indexOf('<summary>') + 9, text.indexOf('</summary>'))
+  for (const row of ['卸载功能', '后端计划函数', '注意 /I', '注册表路径', '文档', '跑测试', '提交']) {
+    assert(inside.includes(row), `the content ${JSON.stringify(row)} belongs inside the summary block`)
+  }
+
+  // Content must appear ONCE. The first draft printed it as prose and again inside the summary, which
+  // makes the model read the same thing twice — the opposite of "do not make it re-learn".
+  assert(text.split('注册表路径').length === 2, 'a list row must appear exactly once in the whole prompt')
+
+  // A sparse handover still produces all five sections; omitted ones say so rather than vanishing,
+  // because a missing section name weakens the "this is a compaction summary" signal.
+  const sparse = handoffPrompt(normaliseHandoff({ summary: '只有一句' }, 's-2'), 'zh')
+  for (const section of sections) assert(sparse.includes(section), `even a sparse handoff needs ${section}`)
+  assert(sparse.includes('(not recorded)'), 'an absent section should say so explicitly')
+
+  // The English path uses the same markers and section names.
+  const en = handoffPrompt(handoff, 'en')
+  for (const section of sections) assert(en.includes(section), `the en prompt needs ${section}`)
+  assert(en.includes('<summary>'), 'the en prompt needs the summary block')
 })
 
 // ------------------------------------------------------------------ packaging
