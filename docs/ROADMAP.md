@@ -406,6 +406,39 @@ official LTS alias directory. The same reasoning removed Node's mirror: 清华 c
 alias, so "newest" there gave v24.1.0, a whole line behind — and a mirror that silently serves stale
 versions is worse than no mirror.
 
+### 12. Launching tools, and passing progress between conversations — **verified; hand-off built**
+
+Two questions asked together, with very different answers.
+
+**Can DSH invoke and launch an installed tool? Verified: yes, already.** Measured in this environment:
+`git --version` → 2.55.0, `node --version` → v22.19.0, `java -version` → 17.0.11, `python --version` →
+3.12.2, `curl --version` → 8.21.0. `mvn`, `docker` and `gcc` are simply not installed, which is what this
+plugin is for — and `maven` now has a verified download route. So "launch a tool" needs no new
+mechanism: anything on the PATH is already reachable, and the plugin's contribution is keeping the PATH
+honest, which `refreshPath()` does by re-reading the Machine and User PATH from the registry after a
+successful install.
+
+Launching *from the panel* is a different matter, with a constraint worth stating plainly. The panel is
+browser code, so it can never spawn a process; that has to be a host route — and a host route that
+accepts a command from the page is arbitrary code execution as this user for anything running in the DSH
+web page. If it is ever added, the command must be **declared in the catalog per entry** and never
+supplied by the caller, the same rule `plansFor()` already follows for installs. A long-running tool
+(a server) would additionally need the job list to tell "still running" from "finished", whereas the
+current job model treats a non-zero exit as failure. Neither is hard; neither is small, so it is not
+built yet.
+
+**Passing progress between conversations: built.** DSH's `sessionController` supplies exactly what this
+needs — `list()` returns every visible session with `running`, `cwd` and `parentSessionId`, and
+`prompt({ sessionId })` admits a prompt into a *chosen* session. The previous `/api/explain` only ever
+targeted "the most recently active session", which is precisely why multi-conversation passing was not
+possible before; it now accepts an optional `sessionId`, and `/api/sessions` projects the list for the
+picker. The prompt (`jobHandoffPrompt`) summarises every job rather than one failure, and says it is
+context rather than a work order — the difference from the help hand-off, which does ask for a fix.
+
+Not yet exercised by hand: the round trip into a *second* conversation. The earlier single-session
+version was verified by hand, and the tests cover the choice being honoured, the id being omitted for
+"current", an unusable session not being offered, and both directions of the empty case.
+
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).

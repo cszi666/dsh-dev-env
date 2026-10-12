@@ -267,6 +267,26 @@ export async function runClientCancelTests(harness) {
     for (const item of items) item()
   }
 
+  /**
+   * Find the button labelled `label` inside the row that mentions `marker`.
+   *
+   * The conversation picker puts a button with the same label on every row, so picking by index is
+   * brittle — nested wrappers walk more than once, and an off-by-one silently targets the wrong
+   * conversation while still looking like a passing test. Matching on the row's own text is the
+   * property that matters.
+   */
+  const buttonInRow = (root, marker, label) => {
+    const node = allNodes(root).find(
+      (candidate) =>
+        typeof candidate.type === 'string' &&
+        Array.isArray(candidate.props?.children) &&
+        candidate.props.children.some((child) => child && child.type === 'button' && textOf(child).trim() === label) &&
+        textOf(candidate).includes(marker),
+    )
+    if (!node) throw new Error(`no row mentioning ${marker} with a ${label} button`)
+    return node.props.children.find((child) => child && child.type === 'button' && textOf(child).trim() === label)
+  }
+
   const buttonLabels = (root) =>
     allNodes(root).filter((node) => node.type === 'button').map((node) => textOf(node).trim())
 
@@ -879,6 +899,104 @@ export async function runClientCancelTests(harness) {
       if (posted.jobId !== 'job1') throw new Error(`posted jobId ${JSON.stringify(posted.jobId)}`)
       if (posted.lang !== 'zh') throw new Error(`posted lang ${JSON.stringify(posted.lang)}`)
       if (!visibleTextOf(tree).includes('已交给 DSH')) throw new Error('the user should be told it was handed over')
+    })
+
+    // ------------------------------------------------------------ multi-conversation hand-off
+    // "A unified list of tasks as progress, passable between conversations." The list already exists;
+    // this is the passing. The property that matters is that choosing a conversation really targets it
+    // — a picker that ignored the choice would look identical to a working one.
+
+    const sessionsAnswer = {
+      status: 200,
+      body: {
+        ok: true,
+        sessions: [
+          { sessionId: 's-aaa', cwd: 'C:\\work\\alpha', running: true, available: true, blank: false },
+          { sessionId: 's-bbb', cwd: 'C:\\work\\beta', running: false, available: true, blank: false },
+          { sessionId: 's-sub', cwd: null, running: false, available: false, blank: false, origin: 'subagent' },
+        ],
+      },
+    }
+
+    await harness.check('the job list offers a hand-off, and reads the conversations first', async () => {
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { id: 'job1', status: 'running' },
+        getRoutes: { '/api/sessions': () => sessionsAnswer },
+      })
+      clickButton(root, '交接给对话')
+      await flush()
+      const text = visibleTextOf(tree)
+      if (!text.includes('交给哪个对话')) throw new Error(`the picker should open, got: ${text.slice(0, 240)}`)
+      if (!text.includes('C:\\work\\alpha')) throw new Error('available conversations should be listed')
+      // A subagent session cannot accept a prompt, so offering it would be a dead option.
+      if (text.includes('s-sub')) throw new Error('a session that cannot accept a prompt must not be offered')
+      if (fetchCalls.some((call) => call.path.endsWith('/api/explain'))) {
+        throw new Error('opening the picker must not send anything')
+      }
+    })
+
+    await harness.check('choosing a conversation targets exactly that conversation', async () => {
+      let posted = null
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { id: 'job1', status: 'running' },
+        getRoutes: { '/api/sessions': () => sessionsAnswer },
+        postRoutes: {
+          '/api/explain': (body) => {
+            posted = body
+            return { status: 200, body: { ok: true, sessionId: body.sessionId || 's-aaa' } }
+          },
+        },
+      })
+      clickButton(root, '交接给对话')
+      await flush()
+      // Pick the row for s-bbb, not "the third button": the row is what identifies the choice.
+      press(buttonInRow(tree, 's-bbb', '交接给对话'))
+      await flush()
+      if (!posted) throw new Error('the hand-off must reach /api/explain')
+      if (posted.handoff !== true) throw new Error(`expected the handoff flag, got ${JSON.stringify(posted)}`)
+      if (posted.sessionId !== 's-bbb') throw new Error(`posted sessionId ${JSON.stringify(posted.sessionId)}`)
+      if (!visibleTextOf(tree).includes('已交接')) throw new Error('the user should be told it was handed over')
+    })
+
+    await harness.check('handing to the current conversation sends no sessionId at all', async () => {
+      // Omitting it is what makes host pick the most recently active session. Sending an empty string
+      // would instead ask for a session literally named "" and 404.
+      let posted = null
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { id: 'job1', status: 'running' },
+        getRoutes: { '/api/sessions': () => sessionsAnswer },
+        postRoutes: {
+          '/api/explain': (body) => {
+            posted = body
+            return { status: 200, body: { ok: true, sessionId: 's-aaa' } }
+          },
+        },
+      })
+      clickButton(root, '交接给对话')
+      await flush()
+      // The "current conversation" row is the one whose label is the auto option, not a session id.
+      press(buttonInRow(tree, '交给当前对话', '交接给对话'))
+      await flush()
+      if (!posted) throw new Error('the hand-off must reach /api/explain')
+      if ('sessionId' in posted) throw new Error(`sessionId must be omitted, got ${JSON.stringify(posted.sessionId)}`)
+    })
+
+    await harness.check('with no jobs there is nothing to hand over', async () => {
+      // The corpus default is one job, so "no jobs" has to be constructed: finish it and clear it the
+      // way a user would, which also proves the button follows the list rather than the mount.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { id: 'job1', status: 'succeeded' },
+        getRoutes: { '/api/sessions': () => sessionsAnswer },
+        postRoutes: { '/api/jobs/delete': () => ({ status: 200, body: { ok: true, removed: 1, jobs: [] } }) },
+      })
+      if (!visibleTextOf(tree).includes('交接给对话')) throw new Error('one job should offer the hand-off')
+      clickButton(root, '清空已结束')
+      await flush()
+      const text = visibleTextOf(tree)
+      if (text.includes('交接给对话')) throw new Error(`no jobs means no hand-off button, got: ${text.slice(0, 200)}`)
+      if (fetchCalls.some((call) => call.path.endsWith('/api/sessions'))) {
+        throw new Error('the session list should not be read when there is nothing to hand over')
+      }
     })
 
     // ------------------------------------------------------------ winget fallback

@@ -892,25 +892,82 @@ function jobHelpPrompt(job, item, lang) {
  * sessionController 必须在请求时惰性获取：apply 那一刻它可能还没就绪，一次性 ctx.get 会拿到
  * undefined 而且永不重试。会话列表按活跃度排序，第一个可用且非空白的会话就是用户正在看的那个。
  */
-async function askDsh({ res, scope, ctx, text, requestId, summary }) {
+async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId }) {
   const sessions = getService(scope || ctx, 'sessionController')
   if (!sessions || typeof sessions.prompt !== 'function') {
     return sendJson(res, 503, { ok: false, error: '当前 DSH 没有可用的会话服务' })
   }
   const abort = new AbortController()
   try {
-    const listed = await sessions.list({}, abort.signal)
-    const rows = (listed && listed.items) || []
-    const target = rows.find((row) => row.agentAvailable && !row.blank)
-    if (!target) return sendJson(res, 409, { ok: false, error: '没有找到可以提问的会话' })
+    // 指定了 sessionId 就投给那个会话（跨对话传递）；否则退到"用户正在看的那个"。
+    // 不合并成一条路径：显式指定的会话不该被"最活跃"的排序悄悄替换掉。
+    let targetId = sessionId
+    if (targetId) {
+      const listed = await sessions.list({}, abort.signal)
+      const known = ((listed && listed.items) || []).some((row) => row.sessionId === targetId)
+      if (!known) return sendJson(res, 404, { ok: false, error: `找不到会话：${targetId}` })
+    } else {
+      const listed = await sessions.list({}, abort.signal)
+      const rows = (listed && listed.items) || []
+      const target = rows.find((row) => row.agentAvailable && !row.blank)
+      if (!target) return sendJson(res, 409, { ok: false, error: '没有找到可以提问的会话' })
+      targetId = target.sessionId
+    }
     await sessions.prompt(
-      { requestId, sessionId: target.sessionId, mode: 'queue', content: [{ type: 'text', text }] },
+      { requestId, sessionId: targetId, mode: 'queue', content: [{ type: 'text', text }] },
       abort.signal,
     )
-    sendJson(res, 200, { ok: true, sessionId: target.sessionId, summary })
+    sendJson(res, 200, { ok: true, sessionId: targetId, summary })
   } catch (error) {
     sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
   }
+}
+
+/**
+ * 请求里可选的目标会话。只接受非空字符串：把 `undefined`/`null` 一起转成"未指定"，
+ * 免得面板发一个空串就被当成"投给名为 '' 的会话"而 404。
+ */
+function sessionIdOf(body) {
+  const raw = body && body.sessionId
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined
+}
+
+/**
+ * 给一条任务生成"交给**另一个对话**"的交接文本。
+ *
+ * 和 jobHelpPrompt 的区别是收件人：那条是"你帮我修"，这条是"这些事正在别的对话里发生，你需要知道"。
+ * 所以它带上**所有**任务的当前状态而不只是失败的那一条，并且不要求对方去修——只要求它知道现状。
+ */
+function jobHandoffPrompt(jobs, lang) {
+  const english = lang === 'en'
+  const running = jobs.filter((job) => job.status === 'running')
+  const rows = jobs.map((job) => {
+    const head = `[${job.status}] ${job.name}（${job.itemId}）· ${job.mode} · ${job.label}`
+    const bits = [
+      job.phase ? `阶段 ${job.phase}` : '',
+      job.percent !== null && job.percent !== undefined ? `${job.percent}%` : '',
+      job.bytesPerSecond ? `${(job.bytesPerSecond / 1048576).toFixed(1)} MB/s` : '',
+      job.error ? `错误：${job.error}` : '',
+    ].filter(Boolean)
+    const tail = (job.log || []).slice(-3).map((line) => `      ${line}`)
+    return [`  ${head}`, bits.length ? `      ${bits.join(' · ')}` : '', ...tail].filter(Boolean).join('\n')
+  })
+  const lines = english
+    ? [
+        `Handing over the state of my dev-env tasks. ${jobs.length} job(s), ${running.length} still running.`,
+        '',
+        ...rows,
+        '',
+        `This is context from the dsh-dev-env panel, not a request to change anything. Use dev_env_job to read the live state if you need more than this summary.`,
+      ]
+    : [
+        `把我这边 dsh-dev-env 的任务现状交接给你。共 ${jobs.length} 个任务，其中 ${running.length} 个还在运行。`,
+        '',
+        ...rows,
+        '',
+        `这是来自 dsh-dev-env 面板的现状，不是要你去改动什么。如果需要比这份摘要更新的状态，用 dev_env_job 查。`,
+      ]
+  return lines.join('\n')
 }
 
 // ---------------------------------------------------------------- job progress
@@ -1608,6 +1665,34 @@ export function apply(ctx, config) {
       sendJson(res, 200, { ok: true })
     })
 
+    // 可供投递的会话列表。面板用"多对话传递"：用户选一个对话，把任务现状交过去。
+    // sessionController.list() 本来就按活跃度排序并给出 running/cwd/parentSessionId，
+    // 这里只做**投影**，把面板需要的那几项挑出来——不把整个 summary 泄给页面。
+    register('/dsh-dev-env/api/sessions', async (req, res) => {
+      const sessions = getService(scope || ctx, 'sessionController')
+      if (!sessions || typeof sessions.list !== 'function') {
+        return sendJson(res, 503, { ok: false, error: '当前 DSH 没有可用的会话服务' })
+      }
+      const abort = new AbortController()
+      try {
+        const listed = await sessions.list({}, abort.signal)
+        const items = ((listed && listed.items) || []).map((row) => ({
+          sessionId: row.sessionId,
+          updatedAt: row.updatedAt ?? null,
+          running: row.running === true,
+          blank: row.blank === true,
+          cwd: row.cwd ?? null,
+          parentSessionId: row.parentSessionId ?? null,
+          origin: row.origin ?? null,
+          // 只有能收提示的会话才可选：多数不可用的会话是子代理，投进去没人接。
+          available: row.agentAvailable === true && row.blank !== true,
+        }))
+        sendJson(res, 200, { ok: true, sessions: items })
+      } catch (error) {
+        sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
+      }
+    })
+
     // 删除任务。一次失败的安装会一直占着列表，用户需要能把它清掉。
     register('/dsh-dev-env/api/jobs/delete', async (req, res) => {
       if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
@@ -1696,7 +1781,33 @@ export function apply(ctx, config) {
           nameEn: null,
         }
         const text = jobHelpPrompt(job, item, body.lang)
-        return askDsh({ req, res, scope, ctx, text, requestId: `dev-env-help-${randomUUID()}`, summary: `已让 DSH 诊断任务 ${job.id}` })
+        return askDsh({
+          req,
+          res,
+          scope,
+          ctx,
+          text,
+          requestId: `dev-env-help-${randomUUID()}`,
+          summary: `已让 DSH 诊断任务 ${job.id}`,
+          sessionId: sessionIdOf(body),
+        })
+      }
+
+      // 交接模式：把**整份任务列表**的现状交给另一个（或同一个）对话。
+      // 和求助的区别在收件人与意图：这是"这些事正在发生，你需要知道"，不是"帮我修这一条"。
+      if (body.handoff) {
+        if (!state.jobs.size) return sendJson(res, 400, { ok: false, error: '现在没有任务可以交接' })
+        const jobs = [...state.jobs.values()]
+        return askDsh({
+          req,
+          res,
+          scope,
+          ctx,
+          text: jobHandoffPrompt(jobs, body.lang),
+          requestId: `dev-env-handoff-${randomUUID()}`,
+          summary: `已把 ${jobs.length} 个任务的现状交给会话`,
+          sessionId: sessionIdOf(body),
+        })
       }
 
       const data = await scan(state)
@@ -1710,6 +1821,7 @@ export function apply(ctx, config) {
         text: explainPrompt(item, body.lang),
         requestId: `dev-env-explain-${randomUUID()}`,
         summary: `已让 DSH 解释 ${item.name}`,
+        sessionId: sessionIdOf(body),
       })
     })
 
@@ -1938,6 +2050,8 @@ export const __test = {
   jobHelpPrompt,
   plansFor,
   wingetReady,
+  jobHandoffPrompt,
+  sessionIdOf,
 }
 
 // ----------------------------------------------------------------- http helpers

@@ -9,6 +9,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Hand a task list to a conversation, and choose which one.** The job list is the unified progress
+  view; this is the passing. **交接给对话** in the jobs header reads the visible sessions and offers them
+  by working directory, newest activity first, showing only the ones that can actually accept a prompt
+  (a subagent session cannot, so it is not offered). Picking one posts a summary of *every* job — status,
+  phase, progress, rate and error, plus the last log lines of each — to exactly that session, while
+  "交给当前对话" omits the id so the host picks the most recently active one. The message says explicitly
+  that it is context rather than a request to change anything: the recipient's job is to know what is
+  happening, not to start fixing it. This is possible because DSH's `sessionController` exposes `list()`
+  (with `running`, `cwd`, `parentSessionId`) and `prompt({ sessionId })`; the panel only chooses the
+  destination and never decides it on the user's behalf.
 - **More entries can be installed without winget, and a failed winget install offers the route.**
   `install.download` now also covers `maven`, `ant`, `python`, `nodejs` and `curl` — each one verified
   before being added. `curl` uses curl.se's rolling `latest.cgi` link, which never changes and so cannot

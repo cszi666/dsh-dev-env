@@ -119,6 +119,16 @@ window.__ModuleLoader__.load({
       pickSourceCancel: '先不装',
       tryInstead: '改用另一条路',
       tryInsteadWhy: 'winget 在不同的环境里适配度差别很大（没有 Store、源被策略禁用、需要管理员权限）。这条命令失败了，但这个条目有一条不依赖它的路。',
+      handoff: '交接给对话',
+      handoffHint: '把上面这份任务列表的现状交给一个对话，让它接着看',
+      handoffPick: '交给哪个对话',
+      handoffPickHint: '列表按最近活跃排序。只有能接收提问的会话才可选。',
+      handoffAuto: '交给当前对话',
+      handoffSent: '已交接',
+      handoffNoJobs: '现在没有任务可以交接',
+      handoffLoading: '正在读取会话…',
+      handoffNoSessions: '没有可用的会话',
+      handoffRunning: '运行中',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -217,6 +227,16 @@ window.__ModuleLoader__.load({
       pickSourceCancel: 'Not now',
       tryInstead: 'Take the other route',
       tryInsteadWhy: 'winget adapts very differently across environments (no Store, sources disabled by policy, needs admin). This command failed, but the entry has a route that does not depend on it.',
+      handoff: 'Hand to a conversation',
+      handoffHint: 'Give this task list, as it stands, to a conversation so it can pick up from here',
+      handoffPick: 'Which conversation',
+      handoffPickHint: 'Ordered by recent activity. Only sessions that can accept a prompt are listed.',
+      handoffAuto: 'Hand to the current conversation',
+      handoffSent: 'Handed over',
+      handoffNoJobs: 'There are no jobs to hand over right now',
+      handoffLoading: 'Reading sessions…',
+      handoffNoSessions: 'No conversation is available',
+      handoffRunning: 'running',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -549,6 +569,10 @@ window.__ModuleLoader__.load({
       // 下载来源选择器：{ itemId, sources, checking, secondsLeft }。
       // 只对"我们自己下载"的条目出现——winget/pip/npm 怎么取包不由我们决定，列出源就是假选项。
       const [picker, setPicker] = React.useState(null)
+      // 任务列表的"交给某个对话"：{ sessions, loading, error }。多对话传递的入口。
+      const [handoff, setHandoff] = React.useState(null)
+      // 交接成功后的提示。单独一个状态，不复用按条目键控的 notice——任务列表不是"某个条目"。
+      const [handoffNotice, setHandoffNotice] = React.useState(null)
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
@@ -633,6 +657,44 @@ window.__ModuleLoader__.load({
       const installById = (itemId, mode) => {
         const item = items.find((row) => row.id === itemId)
         if (item) install(item, mode)
+      }
+
+      /**
+       * 把一个对话的现状交接给另一个对话。
+       *
+       * 这是"多对话传递"的入口：sessionId 省略时交给**用户正在看的那个**会话（和求助按钮一致），
+       * 指定时投给用户选的那个。面板只负责选中转站，不代 DSH 决定投给谁。
+       */
+      const openHandoff = async () => {
+        if (!jobs.length) {
+          setError(t('handoffNoJobs'))
+          return
+        }
+        setHandoff({ sessions: null, loading: true })
+        try {
+          const payload = await api('/sessions')
+          setHandoff({ sessions: (payload.sessions || []).filter((row) => row.available), loading: false })
+        } catch (err) {
+          setHandoff(null)
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      const sendHandoff = async (sessionId) => {
+        setHandoff(null)
+        try {
+          const body = { handoff: true, lang: currentLang }
+          if (sessionId) body.sessionId = sessionId
+          await api('/explain', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+          setHandoffNotice(t('handoffSent'))
+          setTimeout(() => setHandoffNotice(null), 4000)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
       }
 
       const onCopy = (item, label) => {
@@ -985,6 +1047,61 @@ window.__ModuleLoader__.load({
           )
         : null
 
+      /**
+       * 会话选择器（多对话传递）。同样在根节点渲染：它浮在整块面板之上，且不该受页签影响。
+       *
+       * `handoffAuto` 是"交给当前对话"——省略 sessionId 时 host 会挑最活跃的那个，这正是面板默认的
+       * 行为，所以给一个显式按钮比让用户猜要好。
+       */
+      const handoffPicker = handoff
+        ? h(
+            'div',
+            { className: 'dsh-de-modal' },
+            h(
+              'div',
+              { className: 'dsh-de-dialog' },
+              h('h2', null, t('handoffPick')),
+              h('div', { className: 'dsh-de-pickq' }, t('handoffPickHint')),
+              handoff.loading
+                ? h('div', { className: 'dsh-de-msg' }, t('handoffLoading'))
+                : h(
+                    'div',
+                    null,
+                    h(
+                      'div',
+                      { className: 'dsh-de-source', 'data-first': '1' },
+                      h('div', { className: 'dsh-de-sourcemain' }, h('div', { className: 'dsh-de-sourcename' }, t('handoffAuto'))),
+                      h('button', { className: 'dsh-de-btn', onClick: () => sendHandoff(null) }, t('handoff')),
+                    ),
+                    handoff.sessions.length
+                      ? handoff.sessions.map((row) =>
+                          h(
+                            'div',
+                            { className: 'dsh-de-source', key: row.sessionId, 'data-first': '0' },
+                            h(
+                              'div',
+                              { className: 'dsh-de-sourcemain' },
+                              h('div', { className: 'dsh-de-sourcename' }, row.cwd || row.sessionId),
+                              h(
+                                'div',
+                                { className: 'dsh-de-sourcehost' },
+                                `${row.sessionId}${row.running ? ` · ${t('handoffRunning')}` : ''}`,
+                              ),
+                            ),
+                            h('button', { className: 'dsh-de-btn', onClick: () => sendHandoff(row.sessionId) }, t('handoff')),
+                          ),
+                        )
+                      : h('div', { className: 'dsh-de-msg' }, t('handoffNoSessions')),
+                  ),
+              h(
+                'div',
+                { className: 'dsh-de-pick' },
+                h('button', { className: 'dsh-de-btn', onClick: () => setHandoff(null) }, t('pickSourceCancel')),
+              ),
+            ),
+          )
+        : null
+
       return h(
         'div',
         { className: 'dsh-de-root' },
@@ -1283,7 +1400,10 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dsh-de-grouphead' },
               h('span', { className: 'dsh-de-groupname' }, `${t('jobs')} · ${jobs.length}`),
+              handoffNotice ? h('span', { className: 'dsh-de-ok' }, handoffNotice) : null,
               h('span', { className: 'dsh-de-spacer' }),
+              // 多对话传递的入口：把这份列表的现状交给一个对话。
+              jobs.length ? h('button', { className: 'dsh-de-btn ghost', onClick: openHandoff }, t('handoff')) : null,
               jobs.some((job) => job.status !== 'running')
                 ? h('button', { className: 'dsh-de-btn ghost', onClick: clearFinished }, t('clearFinished'))
                 : null,
@@ -1426,6 +1546,7 @@ window.__ModuleLoader__.load({
         // 在根节点渲染：它覆盖整块面板，并且带着一个会自己到点的倒计时，
         // 所以绝不能藏在某个页签分支里面（藏在里面时，切到别的页签会让倒计时在看不见的地方跑完）。
         sourcePicker,
+        handoffPicker,
       )
     }
 

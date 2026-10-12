@@ -1008,6 +1008,42 @@ check('nodejs downloads the LTS line the entry claims, not the newest version', 
   }
 })
 
+// ------------------------------------------------------------------ hand-off between conversations
+console.log('\nhand-off between conversations')
+
+check('a session id is taken as given, and a blank one means "unspecified"', () => {
+  // Omitting the id is how the host picks the most recently active session; sending "" instead would
+  // ask for a session literally named "" and come back 404. So blank has to normalise to undefined.
+  assert(__test.sessionIdOf({ sessionId: 's-aaa' }) === 's-aaa', 'a real id should pass through')
+  assert(__test.sessionIdOf({ sessionId: '  s-bbb  ' }) === 's-bbb', 'surrounding space should be trimmed')
+  for (const blank of [undefined, null, '', '   ', 0, {}, [], true]) {
+    assert(__test.sessionIdOf({ sessionId: blank }) === undefined,
+      `${JSON.stringify(blank)} must mean "unspecified", got ${JSON.stringify(__test.sessionIdOf({ sessionId: blank }))}`)
+  }
+  assert(__test.sessionIdOf() === undefined, 'a request with no body must not throw')
+})
+
+check('the hand-off text carries every job, and does not read as a work order', () => {
+  // This is the "pass the progress to another conversation" message. Its recipient needs the whole
+  // picture rather than only the failure, and it must not read as an instruction to fix things: the
+  // point is that the other conversation knows what is happening.
+  const jobs = [
+    { id: 'a1', itemId: 'jmeter', name: 'Apache JMeter', mode: 'download', label: '自己下载', status: 'running',
+      phase: 'download', percent: 42, bytesPerSecond: 3_145_728, error: null, log: ['12.3 MB / 86.4 MB', '速率 3.0 MB/s'] },
+    { id: 'b2', itemId: 'tomcat11', name: 'Apache Tomcat 11', mode: 'winget', label: 'winget install', status: 'failed',
+      phase: null, percent: null, bytesPerSecond: null, error: '安装进程退出码 1', log: ['找不到与输入条件匹配的程序包'] },
+  ]
+  for (const [lang, needles] of [
+    ['zh', ['2 个任务', '1 个还在运行', 'Apache JMeter', '42%', '3.0 MB/s', 'Apache Tomcat 11', '安装进程退出码 1', '不是要你去改动什么', 'dev_env_job']],
+    ['en', ['2 job(s)', '1 still running', 'Apache JMeter', '42%', 'Apache Tomcat 11', 'dev_env_job', 'not a request to change']],
+  ]) {
+    const text = __test.jobHandoffPrompt(jobs, lang)
+    for (const needle of needles) assert(text.includes(needle), `${lang} hand-off is missing ${needle}`)
+    // Both jobs must appear: a summary that dropped the failed one would hide what is worth knowing.
+    assert(text.includes('jmeter') && text.includes('tomcat11'), `${lang} must include both jobs`)
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 
