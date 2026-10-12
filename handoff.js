@@ -11,6 +11,42 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
+/**
+ * 项目身份：**按目录判定的"末影箱"**。
+ *
+ * 交接不该属于某个对话，而该属于**这段工作**——同一项目下的任何对话打开它都应该看到同一份内容，
+ * 这才是"无论在哪里箱子的内容一样"。所以键取自项目的目录，而不是 sessionId。
+ *
+ * 大小写与结尾分隔符都要归一：Windows 路径不区分大小写，`D:\X` 与 `d:\x\` 是同一个项目，若按字面
+ * 比较会让"同一项目"分裂成两条记录。
+ *
+ * 拿不到目录时**不抛错**，回落到按会话分开：宁可某个环境里退化成旧行为，也不要因为这个功能让插件
+ * 出问题。返回值里带 `scope` 说明是哪种情况，界面可以如实显示。
+ */
+export function projectKeyOf(cwd, sessionId) {
+  const raw = typeof cwd === 'string' ? cwd.trim() : ''
+  if (raw) {
+    const normalized = raw.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
+    if (normalized) return { key: `dir:${normalized}`, scope: 'project', path: raw }
+  }
+  const sid = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : ''
+  return sid
+    ? { key: `session:${sid}`, scope: 'session', path: null }
+    : { key: 'unknown', scope: 'unknown', path: null }
+}
+
+/** 这条记录属于哪个项目。存盘时写在顶层，读盘时缺失就按旧记录处理。 */
+export function recordProject(record) {
+  if (!record || typeof record !== 'object') return null
+  const key = typeof record.projectKey === 'string' ? record.projectKey : ''
+  if (!key) return null
+  return {
+    key,
+    path: typeof record.projectPath === 'string' ? record.projectPath : null,
+    scope: typeof record.projectScope === 'string' ? record.projectScope : 'unknown',
+  }
+}
+
 /** 上限：交接是要被判读的，不是存档。超了就是没精简。 */
 const LIMITS = {
   summary: 2000,
@@ -33,7 +69,34 @@ function clampList(list) {
 }
 
 /**
- * 归一化一份交接。三个清单的顺序固定，因为面板与提示词都按这个顺序读；
+ * 归一化一份记录。
+ *
+ * 顶层是**项目身份**（这条记录属于谁），内容在 `handoff` 里。分成两层是因为它们生命周期不同：
+ * 项目不变，而内容会被反复改写。
+ */
+export function normaliseRecord(input, project) {
+  const source = input && typeof input === 'object' ? input : {}
+  const body = source.handoff && typeof source.handoff === 'object' ? source.handoff : source
+  const identity = project ?? {
+    key: typeof source.projectKey === 'string' ? source.projectKey : 'unknown',
+    path: typeof source.projectPath === 'string' ? source.projectPath : null,
+    scope: typeof source.projectScope === 'string' ? source.projectScope : 'unknown',
+  }
+  return {
+    projectKey: identity.key,
+    projectPath: identity.path ?? null,
+    projectScope: identity.scope ?? 'unknown',
+    // 用途标签：这条记录是干什么用的（传承 / 项目资料 / 可复用经验）。**空数组表示还没打标签**，
+    // 插件不会自己填——标签是用户按按钮的动作。
+    tags: Array.isArray(source.tags) ? source.tags.filter((row) => typeof row === 'string' && row.trim()).slice(0, 12) : [],
+    // 谁写的。项目记录可以被多个对话改写，所以留一个"最后写入者"便于解释来龙去脉。
+    lastSessionId: typeof source.lastSessionId === 'string' ? source.lastSessionId : null,
+    handoff: normaliseHandoff(body, identity.key),
+  }
+}
+
+/**
+ * 归一化一份交接的内容部分。三个清单的顺序固定，因为面板与提示词都按这个顺序读；
  * 未知字段一律丢弃，避免把调用方塞进来的任意结构存到磁盘上。
  */
 export function normaliseHandoff(input, sessionId) {
@@ -66,6 +129,19 @@ export function emptyHandoff(sessionId) {
   }
 }
 
+/** 空记录：一个还没写过任何东西的项目。 */
+export function emptyRecord(project) {
+  const identity = project ?? { key: 'unknown', path: null, scope: 'unknown' }
+  return {
+    projectKey: identity.key,
+    projectPath: identity.path ?? null,
+    projectScope: identity.scope ?? 'unknown',
+    tags: [],
+    lastSessionId: null,
+    handoff: emptyHandoff(identity.key),
+  }
+}
+
 /** 这份交接是否还是空的（面板据此显示"还没写"而不是一张空表）。 */
 export function isHandoffEmpty(handoff) {
   if (!handoff) return true
@@ -79,27 +155,47 @@ export function isHandoffEmpty(handoff) {
   )
 }
 
-export function loadHandoffs(file) {
+/**
+ * 读记录表。
+ *
+ * **旧格式必须继续可读**：1.2.x 之前写的是 `{ bySession: { [sessionId]: handoff } }`。用户机器上可能
+ * 已经有这样的文件，直接换格式等于把那部分内容丢掉——而"原有功能不出现无法复现"是这次重构的硬要求。
+ * 所以旧条目会被读出来、并**按会话键**放进新结构（`session:<id>`），下一次保存时自然迁移。
+ */
+export function loadRecords(file) {
   try {
-    if (!file || !existsSync(file)) return {}
+    if (!file || !existsSync(file)) return { byProject: {}, migrated: 0 }
     const parsed = JSON.parse(readFileSync(file, 'utf8'))
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out = {}
-    for (const [sessionId, value] of Object.entries(parsed.bySession || {})) {
-      out[sessionId] = normaliseHandoff(value, sessionId)
+    if (!parsed || typeof parsed !== 'object') return { byProject: {}, migrated: 0 }
+
+    const byProject = {}
+    for (const [key, value] of Object.entries(parsed.byProject || {})) {
+      const project = recordProject(value) ?? { key, path: null, scope: 'unknown' }
+      byProject[project.key] = normaliseRecord(value, project)
     }
-    return out
+
+    let migrated = 0
+    for (const [sessionId, value] of Object.entries(parsed.bySession || {})) {
+      const identity = { key: `session:${sessionId}`, path: null, scope: 'session' }
+      // 新格式里已经有同键记录就不覆盖：新写的比旧的更可信。
+      if (!byProject[identity.key]) {
+        byProject[identity.key] = normaliseRecord(Object.assign({ lastSessionId: sessionId }, value), identity)
+        migrated += 1
+      }
+    }
+    return { byProject, migrated }
   } catch {
     // 读坏了就当没有：交接是辅助信息，不该因为它让整个插件起不来。
-    return {}
+    return { byProject: {}, migrated: 0 }
   }
 }
 
-export function saveHandoffs(file, bySession) {
+export function saveRecords(file, byProject) {
   try {
     if (!file) return false
     mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify({ version: 1, bySession }, null, 2), 'utf8')
+    // 写新结构，同时**留下空的 bySession**，这样更老的版本读到它至少不会崩。
+    writeFileSync(file, JSON.stringify({ version: 2, byProject, bySession: {} }, null, 2), 'utf8')
     return true
   } catch {
     return false

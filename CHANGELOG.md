@@ -9,6 +9,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A handover record is keyed by project, not by conversation.** Keeping it per session was wrong for
+  the way it is actually used: two of the three intended cases are cross-project — a branch needing the
+  parent project's material, another project wanting its lessons — and a note private to one conversation
+  cannot serve either. Content now belongs to *the work*: the identity is the project directory, so any
+  conversation in that project reads and writes the same record, which is what makes it a shared chest
+  rather than a private note. The project is resolved from the session's `cwd`; with no directory to key
+  on, the record falls back to per-session and **says so in the UI** rather than silently merging every
+  conversation into one bucket.
+  - Each record now has three layers with different lifetimes: the project identity (top level), the user
+    tags, and the content. Tags are a user action and arrive empty; the plugin never invents them.
+  - **Files written by the previous version still load.** That format was `{ bySession: {…} }`, and a user
+    may already have one on disk, so those entries are read, keyed as `session:<id>`, marked with their
+    degraded scope, and migrated on the next save. Silently dropping someone's handover would have broken
+    the one condition attached to this refactor.
+  - `GET /api/handoff` without an identity now returns the **index of projects** — the entry point for
+    fetching another project's material. Delivery is by `projectKey`, since what is sent is project
+    material rather than one conversation's property.
+
+### Changed
+
 - **A handover is emitted as DSH's own compaction summary, not a private format.** The requirement was to
   stop making the model re-learn how to read a handover, so the format question was answered by reading
   DSH rather than by inventing markup: `DEFAULT_SUMMARY_PROMPT` (CompactionControl) asks for five numbered

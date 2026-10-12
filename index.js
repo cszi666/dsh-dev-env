@@ -19,7 +19,7 @@ import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
-import { normaliseHandoff, emptyHandoff, isHandoffEmpty, loadHandoffs, saveHandoffs, handoffPrompt } from './handoff.js'
+import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
@@ -967,6 +967,27 @@ async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId }) 
 }
 
 /**
+ * 一个会话属于哪个项目。
+ *
+ * 身份取自 `sessionController.list()` 给出的 `cwd`：那是"这段工作在哪里做"的唯一可靠来源。
+ * 读不到会话列表（服务未就绪）时不抛错——退回按会话分开，由 `projectKeyOf` 标注 `scope: 'session'`，
+ * 界面就能如实说明"这次没能按项目归并"。
+ */
+async function projectForSession(ctx, sessionId) {
+  const sessions = getService(ctx, 'sessionController')
+  if (sessions && typeof sessions.list === 'function') {
+    try {
+      const listed = await sessions.list({}, new AbortController().signal)
+      const row = ((listed && listed.items) || []).find((entry) => entry.sessionId === sessionId)
+      if (row) return projectKeyOf(row.cwd, sessionId)
+    } catch {
+      /* 读不到就走下面的退化路径 */
+    }
+  }
+  return projectKeyOf(null, sessionId)
+}
+
+/**
  * 请求里可选的目标会话。只接受非空字符串：把 `undefined`/`null` 一起转成"未指定"，
  * 免得面板发一个空串就被当成"投给名为 '' 的会话"而 404。
  */
@@ -1878,10 +1899,13 @@ export function apply(ctx, config) {
       })
     })
 
-    // 会话交接：读写**按会话键控**的精简任务状态。
+    // 交接：读写**按项目键控**的记录，而不是按对话。
     //
-    // 为什么按会话分：每个对话有自己的进度，互相不该覆盖。新对话开始时它的交接是空的（还没做事），
-    // 而旧对话的交接要留着，供接手的新对话读取——这正是"到上限后无缝衔接"的机制。
+    // 为什么是项目：交接属于"这段工作"，不属于某个对话。同一项目下的任何对话打开它都该看到同一份
+    // ——这才是"无论在哪里箱子的内容一样"。而"分支项目要它的全部资料""别的项目要它的经验"这两个
+    // 场景，只有项目键控 + 索引才能表达：前者是同一目录，后者靠索引跨目录取用。
+    //
+    // 项目身份取自会话的 `cwd`（sessionController.list() 会给出），拿不到时退回按会话分开并如实标注。
     register('/dsh-dev-env/api/handoff', async (req, res) => {
       const method = (req.method || 'GET').toUpperCase()
       const file = handoffsFile()
@@ -1889,52 +1913,79 @@ export function apply(ctx, config) {
       if (method === 'GET') {
         const url = new URL(req.url || '/', 'http://localhost')
         const sessionId = url.searchParams.get('sessionId') || ''
-        const all = loadHandoffs(file)
-        // 不带 sessionId 时返回全部索引，供"从别的对话接手"选择来源。
-        if (!sessionId) {
+        const projectKey = url.searchParams.get('projectKey') || ''
+        const { byProject } = loadRecords(file)
+
+        // 不带身份时返回**索引**：这是"从别的项目取用"的入口（场景 2 与 3）。
+        if (!sessionId && !projectKey) {
           return sendJson(res, 200, {
             ok: true,
             file,
-            sessions: Object.values(all)
+            projects: Object.values(byProject)
               .map((row) => ({
-                sessionId: row.sessionId,
-                summary: row.summary,
-                todo: row.todo.length,
-                doing: row.doing.length,
-                done: row.done.length,
-                updatedAt: row.updatedAt,
+                projectKey: row.projectKey,
+                projectPath: row.projectPath,
+                scope: row.projectScope,
+                summary: row.handoff.summary,
+                tags: row.tags,
+                todo: row.handoff.todo.length,
+                doing: row.handoff.doing.length,
+                done: row.handoff.done.length,
+                updatedAt: row.handoff.updatedAt,
               }))
               .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
           })
         }
-        return sendJson(res, 200, { ok: true, file, handoff: all[sessionId] ?? emptyHandoff(sessionId) })
+
+        const project = projectKey
+          ? { key: projectKey, path: null, scope: 'explicit' }
+          : await projectForSession(scope || ctx, sessionId)
+        return sendJson(res, 200, {
+          ok: true,
+          file,
+          project,
+          record: byProject[project.key] ?? emptyRecord(project),
+        })
       }
 
       if (method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET / POST only' })
       const body = await readJson(req)
       // 来自面板的保存：sessionId 必须显式给出（面板从 conversation.view 的 prop 拿到它）。
-      // 没有 sessionId 就不知道该存给谁，宁可拒绝也不猜。
+      // 没有它就不知道该存给哪个项目，宁可拒绝也不猜。
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
-      if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId：不知道该把交接存给哪个对话' })
-      const all = loadHandoffs(file)
-      const handoff = normaliseHandoff(body.handoff, sessionId)
-      all[sessionId] = handoff
-      if (!saveHandoffs(file, all)) {
+      if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId：不知道该把交接存给哪个项目' })
+      const project = await projectForSession(scope || ctx, sessionId)
+      const { byProject } = loadRecords(file)
+      const record = normaliseRecord(
+        Object.assign({}, body.record || body, { lastSessionId: sessionId, tags: body.tags ?? body.record?.tags }),
+        project,
+      )
+      byProject[project.key] = record
+      if (!saveRecords(file, byProject)) {
         return sendJson(res, 500, { ok: false, error: `保存失败：${file || '(没有可用的存储位置)'}` })
       }
-      sendJson(res, 200, { ok: true, handoff })
+      sendJson(res, 200, { ok: true, project, record })
     })
 
-    // 把某个对话的交接**投递**给另一个对话：这就是"到上限后无缝衔接"的执行动作。
+    // 把**某个项目**的交接投递给一个对话：这就是"到上限后无缝衔接"的执行动作。
+    // 投递的是一份**项目资料**，而不是"某个对话的私产"——所以接手方可以是同一项目的另一个对话
+    // （场景 1），也可以是另一个项目的对话来取用（场景 2、3）。
     register('/dsh-dev-env/api/handoff/send', async (req, res) => {
       if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
       const body = await readJson(req)
       const file = handoffsFile()
-      const all = loadHandoffs(file)
-      const from = typeof body.from === 'string' ? body.from.trim() : ''
-      const handoff = all[from]
-      if (!handoff) return sendJson(res, 404, { ok: false, error: `那个对话还没有交接内容：${from || '(未指定)'}` })
-      const text = handoffPrompt(handoff, body.lang)
+      const { byProject } = loadRecords(file)
+      // 来源可以按项目键给（索引里选一个），也可以按会话给（面板只知道自己是哪个会话）。
+      const from = typeof body.projectKey === 'string' ? body.projectKey.trim() : ''
+      const fromSession = typeof body.from === 'string' ? body.from.trim() : ''
+      const project = from
+        ? { key: from, path: null, scope: 'explicit' }
+        : await projectForSession(scope || ctx, fromSession)
+      const record = byProject[project.key]
+      if (!record) {
+        return sendJson(res, 404, { ok: false, error: `这个项目还没有交接内容：${project.key || '(未指定)'}` })
+      }
+      const text = handoffPrompt(record.handoff, body.lang)
       if (!text) return sendJson(res, 400, { ok: false, error: '这份交接还是空的，先写点内容再投递' })
       const target = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
       return askDsh({
@@ -2197,6 +2248,9 @@ export const __test = {
   sessionIdOf,
   pickDefaultSource,
   downloadSourcesOf,
+  projectKeyOf,
+  normaliseRecord,
+  emptyRecord,
 }
 
 // ----------------------------------------------------------------- http helpers

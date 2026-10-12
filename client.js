@@ -124,6 +124,8 @@ window.__ModuleLoader__.load({
       handoffPick: '交给哪个对话',
       handoffPickHint: '列表按最近活跃排序。只有能接收提问的会话才可选。',
       handoffAuto: '交给当前对话',
+      handoffProject: '所属项目',
+      handoffScopeSession: '未能识别项目目录，暂按对话保存',
       handoffSent: '已交接',
       handoffNoJobs: '现在没有任务可以交接',
       handoffLoading: '正在读取会话…',
@@ -250,6 +252,8 @@ window.__ModuleLoader__.load({
       handoffPick: 'Which conversation',
       handoffPickHint: 'Ordered by recent activity. Only sessions that can accept a prompt are listed.',
       handoffAuto: 'Hand to the current conversation',
+      handoffProject: 'Project',
+      handoffScopeSession: 'no project directory recognised, kept per conversation',
       handoffSent: 'Handed over',
       handoffNoJobs: 'There are no jobs to hand over right now',
       handoffLoading: 'Reading sessions…',
@@ -570,7 +574,10 @@ window.__ModuleLoader__.load({
      */
     function DevEnvHandoffView(props) {
       const sessionId = sessionIdFrom(props)
-      const [handoff, setHandoff] = React.useState(null)
+      // 两层：`project` 是这份记录属于谁（界面上要显示出来，用户才知道自己在改哪个项目的箱子），
+      // `record` 是内容 + 标签。
+      const [project, setProject] = React.useState(null)
+      const [record, setRecord] = React.useState(null)
       const [error, setError] = React.useState(null)
       const [saved, setSaved] = React.useState(false)
       const [sent, setSent] = React.useState(null)
@@ -590,7 +597,9 @@ window.__ModuleLoader__.load({
         let alive = true
         api(`/handoff?sessionId=${encodeURIComponent(sessionId)}`)
           .then((payload) => {
-            if (alive) setHandoff(payload.handoff || {})
+            if (!alive) return
+            setProject(payload.project || null)
+            setRecord(payload.record || null)
           })
           .catch((err) => {
             if (alive) setError(String((err && err.message) || err))
@@ -608,7 +617,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsh-de-msg' }, t('handoffNoSession')),
         )
       }
-      if (!handoff) {
+      if (!record) {
         return h(
           'div',
           { className: 'dsh-de-handoff' },
@@ -617,9 +626,13 @@ window.__ModuleLoader__.load({
         )
       }
 
+      // 内容住在 record.handoff 里；标签住在 record.tags。分开是因为生命周期不同：
+      // 内容会被反复改写，标签是你按按钮才落下的。
+      const handoff = record.handoff || {}
+
       const patch = (fields) => {
         setSaved(false)
-        setHandoff((current) => Object.assign({}, current, fields))
+        setRecord((current) => Object.assign({}, current, { handoff: Object.assign({}, current.handoff, fields) }))
       }
 
       const save = async () => {
@@ -627,9 +640,10 @@ window.__ModuleLoader__.load({
           const payload = await api('/handoff', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, handoff }),
+            body: JSON.stringify({ sessionId, record }),
           })
-          setHandoff(payload.handoff || handoff)
+          setProject(payload.project || project)
+          setRecord(payload.record || record)
           setSaved(true)
           setError(null)
         } catch (err) {
@@ -643,7 +657,9 @@ window.__ModuleLoader__.load({
           const payload = await api('/handoff/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from: sessionId, lang: currentLang }),
+            // 按**项目**投递，而不是按对话：投出去的是一份项目资料，
+            // 所以接手方可以是同项目的另一个对话，也可以是别的项目来取用。
+            body: JSON.stringify({ projectKey: project?.key, lang: currentLang }),
           })
           setSent(payload.sessionId || t('handoffAuto'))
           setError(null)
@@ -695,6 +711,15 @@ window.__ModuleLoader__.load({
           h('button', { className: 'dsh-de-btn', onClick: save }, t('handoffSave')),
         ),
         h('div', { className: 'dsh-de-pickq' }, t('handoffHint')),
+        // 显示这份记录属于哪个项目。用户必须知道自己在改哪个箱子——这正是"末影箱"与"私人笔记"
+        // 的区别，藏起来会让人以为它是这个对话的私产。
+        h(
+          'div',
+          { className: 'dsh-de-sourcehost' },
+          project
+            ? `${t('handoffProject')}: ${project.path || project.key}${project.scope === 'session' ? ` (${t('handoffScopeSession')})` : ''}`
+            : '',
+        ),
         error ? h('div', { className: 'dsh-de-err' }, error) : null,
         textField('summary', t('handoffSummary'), 2),
         listField('todo', t('handoffTodo')),

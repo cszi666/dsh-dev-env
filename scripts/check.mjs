@@ -40,7 +40,7 @@ import {
   rootsFile,
 } from '../paths.js'
 import { describeProbeHint } from '../roots.js'
-import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt } from '../handoff.js'
+import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, loadRecords, saveRecords } from '../handoff.js'
 import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView, SETTING_DEFS } from '../settings.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
@@ -1324,6 +1324,114 @@ check('the handoff prompt is a DSH compaction summary, not a private format', ()
   const en = handoffPrompt(handoff, 'en')
   for (const section of sections) assert(en.includes(section), `the en prompt needs ${section}`)
   assert(en.includes('<summary>'), 'the en prompt needs the summary block')
+})
+
+// ------------------------------------------------------------------ project-keyed records
+console.log('\nproject-keyed records')
+
+check('a record is keyed by project, so any conversation in it sees the same content', () => {
+  // The design: content belongs to the work, not to the conversation, so it behaves like a shared chest
+  // rather than a private note. Two consequences follow, and both are asserted here — the same directory
+  // must produce the same key from different conversations, and the key must not involve the session.
+  const a = __test.projectKeyOf('D:\\work\\alpha', 's-1')
+  const b = __test.projectKeyOf('D:\\work\\alpha', 's-2')
+  assert(a.key === b.key, `two conversations in one project must share a key (${a.key} vs ${b.key})`)
+  assert(a.key === 'dir:d:\\work\\alpha', `unexpected key ${a.key}`)
+  assert(a.scope === 'project', 'a known directory means project scope')
+
+  // Windows paths are case-insensitive and a trailing separator is noise: treating these as different
+  // projects would split one chest into several, which is exactly what the design avoids.
+  for (const variant of ['d:\\work\\alpha', 'D:\\WORK\\ALPHA', 'D:\\work\\alpha\\', 'D:/work/alpha']) {
+    assert(__test.projectKeyOf(variant, 's-x').key === a.key, `${variant} should be the same project`)
+  }
+  assert(__test.projectKeyOf('D:\\work\\beta', 's-1').key !== a.key, 'different directories are different projects')
+
+  // No directory: fall back to session scope rather than throwing or merging every session into one
+  // bucket. The scope makes the degradation visible instead of hiding it.
+  const noDir = __test.projectKeyOf(null, 's-1')
+  assert(noDir.scope === 'session' && noDir.key === 'session:s-1', `expected a session fallback, got ${noDir.key}`)
+  assert(__test.projectKeyOf('   ', 's-1').key === 'session:s-1', 'a blank directory is the same as none')
+  assert(__test.projectKeyOf(null, null).scope === 'unknown', 'no identity at all is reported as unknown')
+})
+
+check('a record carries its project identity, tags and content in separate layers', () => {
+  const project = __test.projectKeyOf('D:\\work\\alpha', 's-1')
+  const record = __test.normaliseRecord(
+    {
+      summary: '在做交接重构',
+      todo: ['项目键控', '标签按钮'],
+      done: ['存储改造'],
+      // Tags are a user action; the plugin never invents them.
+      tags: ['传承', '', '可复用经验', 42],
+      lastSessionId: 's-9',
+    },
+    project,
+  )
+  assert(record.projectKey === project.key, 'the project identity sits at the top level')
+  assert(record.projectPath === 'D:\\work\\alpha', 'the human-readable path is kept for display')
+  assert(record.handoff.summary === '在做交接重构', 'content lives under handoff')
+  assert(record.handoff.todo.length === 2, 'the content keeps its lists')
+  assert(record.tags.length === 2 && record.tags[0] === '传承', `tags should be cleaned, got ${JSON.stringify(record.tags)}`)
+  assert(record.lastSessionId === 's-9', 'the last writer is recorded, since several conversations may write')
+
+  // Old-format input (a bare handoff with no wrapper) must still be accepted: that is what the panel
+  // sent before this change, and a save from a stale page must not be lost.
+  const bare = __test.normaliseRecord({ summary: '旧格式', todo: ['x'] }, project)
+  assert(bare.handoff.summary === '旧格式', 'a bare handoff must still be read')
+  assert(bare.tags.length === 0, 'a bare handoff arrives untagged')
+
+  for (const junk of [null, undefined, 42, 'text', []]) {
+    const row = __test.normaliseRecord(junk, project)
+    assert(row.projectKey === project.key && isHandoffEmpty(row.handoff), `${JSON.stringify(junk)} should be empty`)
+  }
+
+  const empty = __test.emptyRecord(project)
+  assert(
+    empty.projectKey === project.key && isHandoffEmpty(empty.handoff) && empty.tags.length === 0,
+    'an empty record belongs to its project and says nothing yet',
+  )
+})
+
+check('records round-trip, and a file in the pre-existing session format still loads', () => {
+  // "Guarantee the existing feature cannot fail to reproduce" was the condition for this refactor, so
+  // the previous on-disk shape has to keep working: a user may already have that file, and a format
+  // change that silently dropped their handover would break exactly that promise.
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-records-'))
+  try {
+    const file = path.join(dir, 'handoffs.json')
+    const project = __test.projectKeyOf('D:\\work\\alpha', 's-1')
+
+    assert(Object.keys(loadRecords(file).byProject).length === 0, 'a missing file means no records')
+
+    const record = __test.normaliseRecord({ summary: '迁移前', todo: ['一件事'], tags: ['传承'] }, project)
+    assert(saveRecords(file, { [project.key]: record }), 'saving should work')
+    const back = loadRecords(file).byProject
+    assert(back[project.key], 'the record should come back by project key')
+    assert(back[project.key].handoff.summary === '迁移前', 'the content should survive the round trip')
+    assert(back[project.key].tags[0] === '传承', 'the tags should survive too')
+
+    // Now the old shape: exactly what the previous version wrote.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        bySession: { 's-old': { summary: '旧格式的记录', todo: ['旧待办'], doing: [], done: [], next: '', notes: '' } },
+      }),
+      'utf8',
+    )
+    const migrated = loadRecords(file)
+    assert(migrated.migrated === 1, `the old entry should be migrated, got ${migrated.migrated}`)
+    const old = migrated.byProject['session:s-old']
+    assert(old, 'the old record should be reachable under a session key')
+    assert(old.handoff.summary === '旧格式的记录', 'its content must not be lost')
+    assert(old.handoff.todo[0] === '旧待办', 'its lists must not be lost')
+    assert(old.projectScope === 'session', 'its degraded scope should be recorded, not hidden')
+
+    writeFileSync(file, 'not json at all', 'utf8')
+    assert(Object.keys(loadRecords(file).byProject).length === 0, 'a corrupt file falls back to no records')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ------------------------------------------------------------------ packaging
