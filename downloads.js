@@ -521,6 +521,24 @@ export async function resolveDownload(spec, options = {}) {
     const html = await fetchText(entry.listing)
     if (html === null) return []
     const pattern = entry.fileNamePattern ? new RegExp(entry.fileNamePattern) : null
+
+    // 有些镜像列表里是**版本目录**而不是文件（Apache 的 `tomcat-11/` 就是这样，zip 在
+    // `v11.0.26/bin/` 下面）。`subPath` 因此接受 `{version}` 占位符——没有它就只能给 Tomcat
+    // 写死一个版本，而写死的版本正是这个函数存在的理由：它会在下一个版本发布时无声腐烂。
+    if (entry.subPath) {
+      const dirPattern = new RegExp(entry.directoryPattern || '^v?([\\d.]+)/$')
+      const dirs = []
+      for (const href of String(html).matchAll(/href\s*=\s*["']([^"']+\/)["']/gi)) {
+        const found = dirPattern.exec(href[1]) ?? dirPattern.exec(decodeURIComponent(href[1]))
+        if (!found) continue
+        const version = found[1] ?? null
+        const path = entry.subPath.replace(/\{version\}/g, version ?? '')
+        dirs.push({ url: new URL(path, entry.listing).href, version, name: path.split('/').pop() })
+      }
+      dirs.sort((a, b) => (a.version && b.version ? compareVersions(b.version, a.version) : 0))
+      return dirs
+    }
+
     const matches = []
     for (const url of filesInListing(html, entry.listing)) {
       const name = decodeURIComponent(url.split('/').pop() ?? '')

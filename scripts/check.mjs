@@ -849,6 +849,79 @@ check('the help prompt carries what a diagnosis needs, and asks for a fix', () =
   }
 })
 
+// ------------------------------------------------------------------ winget availability
+console.log('\nwinget availability')
+
+check('a broken winget is not offered as a plan', () => {
+  // On the development machine winget.exe is a 0-byte app-execution-alias stub (the Store never
+  // installed DesktopAppInstaller): it runs, prints nothing, and exits 0x8A150001. Every winget plan
+  // then fails and the user sees "one-click install did nothing", which reads as a broken plugin.
+  const withWinget = { id: 'x', name: 'X', install: { winget: 'Vendor.Thing', page: 'https://example.test/' } }
+  const downloadable = {
+    id: 'tomcat11',
+    name: 'Tomcat 11',
+    install: { page: 'https://example.test/', download: { direct: 'https://example.test/a.zip' } },
+  }
+
+  const usable = __test.plansFor(withWinget, { wingetReady: true })
+  assert(usable.some((plan) => plan.mode === 'winget'), 'a healthy winget should still be offered')
+
+  const broken = __test.plansFor(withWinget, { wingetReady: false })
+  assert(!broken.some((plan) => plan.mode === 'winget'),
+    `a broken winget must not be offered, got ${JSON.stringify(broken.map((p) => p.mode))}`)
+  assert(broken.some((plan) => plan.mode === 'page'), 'the download page should remain the honest option')
+
+  const both = __test.plansFor(downloadable, { wingetReady: false })
+  assert(both.some((plan) => plan.mode === 'download'), 'our own download route must survive')
+})
+
+check('resolveDownload picks the newest version directory when a listing holds directories', async () => {
+  // Apache lists Tomcat as version *directories* (`v11.0.26/`) with the zip inside `bin/`, which the
+  // plain file-listing path cannot express. Pinning one version instead would rot at the next release.
+  const listing = 'https://mirror.test/tomcat-11/'
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => `
+      <a href="v11.0.9/">old</a>
+      <a href="v11.0.26/">new</a>
+      <a href="v11.0.5/">older</a>
+      <a href="../">up</a>`,
+  })
+  const probed = []
+  const probe = async (url) => {
+    probed.push(url)
+    return url.includes('v11.0.26') ? { status: 200, total: 15_032_303 } : { status: 404 }
+  }
+  const resolved = await resolveDownload(
+    { listing, directoryPattern: '^v(11\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+    { fetchImpl, probe },
+  )
+  assert(resolved, 'expected a resolution')
+  assert(resolved.url === `${listing}v11.0.26/bin/apache-tomcat-11.0.26.zip`, `got ${resolved.url}`)
+  assert(resolved.version === '11.0.26', `version came out as ${resolved.version}`)
+  assert(probed[0].includes('v11.0.26'), 'the newest directory must be verified first')
+})
+
+check('the shipped tomcat entries declare a resolvable download source', () => {
+  // Their winget ids were wrong -- Apache's Tomcat package is unversioned, so Apache.Tomcat.11 does
+  // not exist -- and with winget broken on this machine there was no working route at all. The
+  // download source is now the route, so it must stay shaped like the one resolveDownload understands.
+  for (const id of ['tomcat9', 'tomcat11']) {
+    const entry = CATALOG.find((row) => row.id === id)
+    assert(entry, `${id} should be in the catalog`)
+    const download = entry.install?.download
+    assert(download, `${id} should declare install.download`)
+    assert(typeof download.listing === 'string' && !/apache-tomcat-[\d.]+\.zip/.test(download.listing),
+      `${id} must point at a listing, not a pinned archive`)
+    assert(download.directoryPattern && download.subPath, `${id} needs directoryPattern and subPath`)
+    assert(download.subPath.includes('{version}'), `${id} subPath must use {version}, not a fixed one`)
+    new RegExp(download.directoryPattern)
+    assert(!entry.install.winget,
+      `${id} must not carry a winget id until one is verified — an unverified one reads as a route`)
+  }
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

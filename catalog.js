@@ -378,7 +378,16 @@ export const CATALOG = [
       '%DRIVES%\\Tomcat9\\RELEASE-NOTES', '%DRIVES%\\Tomcat\\RELEASE-NOTES',
       '%DSH_DEV_ENV_ROOTS%\\Tomcat9\\RELEASE-NOTES', '%DSH_DEV_ENV_ROOTS%\\Tomcat\\RELEASE-NOTES',
     ] },
-    install: { winget: 'Apache.Tomcat.9', page: 'https://tomcat.apache.org/download-90.cgi' } },
+    // Tomcat 的 winget 包 id **不带版本号**（Apache.Tomcat），所以 `Apache.Tomcat.9` 和
+    // `Apache.Tomcat.11` 都不存在——后者是这台机器上"一键补齐 Tomcat 11"失败的直接原因
+    // （退出码 0x8A150014 = NO_MATCHES_FOUND，日志"找不到与输入条件匹配的程序包"）。
+    // 两个条目指向同一个包，所以这里故意**不声明 winget**：宁可只给能验证的下载方案，
+    // 也不给一个明知找不到的包 id。要恢复 winget 方案，先确认 id 真的存在（本机 winget 是坏的，
+    // 查不了，这就是为什么没有猜一个"看起来对"的 id）。
+    install: { page: 'https://tomcat.apache.org/download-90.cgi',
+      download: { listing: 'https://dlcdn.apache.org/tomcat/tomcat-9/',
+        directoryPattern: '^v(9\\.[\\d.]+)/$',
+        subPath: 'v{version}/bin/apache-tomcat-{version}.zip' } } },
 
   { id: 'tomcat11', name: 'Apache Tomcat 11', category: 'data',
     probe: { kind: 'pathList', pattern: 'Apache Tomcat Version ([\\d.]+)', paths: [
@@ -387,7 +396,10 @@ export const CATALOG = [
       '%DRIVES%\\Tomcat11\\RELEASE-NOTES',
       '%DSH_DEV_ENV_ROOTS%\\Tomcat11\\RELEASE-NOTES', '%DSH_DEV_ENV_ROOTS%\\Tomcat\\RELEASE-NOTES',
     ] },
-    install: { winget: 'Apache.Tomcat.11', page: 'https://tomcat.apache.org/download-11.cgi' } },
+    install: { page: 'https://tomcat.apache.org/download-11.cgi',
+      download: { listing: 'https://dlcdn.apache.org/tomcat/tomcat-11/',
+        directoryPattern: '^v(11\\.[\\d.]+)/$',
+        subPath: 'v{version}/bin/apache-tomcat-{version}.zip' } } },
 
   { id: 'jenkins', name: 'Jenkins', category: 'data',
     probe: { kind: 'pathList', paths: ['%ProgramFiles%\\Jenkins', '%ProgramData%\\Jenkins',

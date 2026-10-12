@@ -562,6 +562,10 @@ async function scan(state, options = {}) {
       })
       await Promise.all(workers)
 
+      // winget 是否真的能用：整个扫描只问一次，然后决定要不要把 winget 方案列出来。
+      // force 时不缓存失败结果，所以用户装好 winget 后"重新扫描"就能立刻看到它出现。
+      const wingetOk = await wingetReady()
+
       const items = await Promise.all(
         CATALOG.map(async (entry, index) => {
           const result = results[index] ?? missing('未探测')
@@ -582,7 +586,7 @@ async function scan(state, options = {}) {
             // 面板据此决定"选文件夹"这个入口显不显示（对注册表/PATH 类条目它毫无用处）。
             hint: describeProbeHint(entry),
             install: entry.install ?? {},
-            plans: plansFor(entry).map((plan) => ({ mode: plan.mode, label: plan.label, url: plan.url ?? null, note: plan.note ?? null })),
+            plans: plansFor(entry, { wingetReady: wingetOk }).map((plan) => ({ mode: plan.mode, label: plan.label, url: plan.url ?? null, note: plan.note ?? null })),
           }
           // 卸载方式只对**已安装**的条目计算，而且只在真有时才给：面板因此不需要自己判断
           // "这个工具能不能卸"，也就不会出现按下去没反应的按钮。registry 类型要读注册表，
@@ -590,6 +594,8 @@ async function scan(state, options = {}) {
           const plan = await uninstallPlanFor(state, { id: entry.id, installed: result.installed })
           return {
             ...base,
+            // 面板要能解释"为什么这里没有一键补齐"，而不是只显示一个空位。
+            wingetUsable: wingetOk,
             uninstall: plan
               ? {
                   label: plan.label,
@@ -642,11 +648,36 @@ async function scan(state, options = {}) {
 
 // ----------------------------------------------------------------- install
 
+/**
+ * winget 到底能不能用。
+ *
+ * 这台机器上出现过最坏的一种情况：`%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe` 是**0 字节的
+ * 应用执行别名占位符**（Store 从没装过 winget）。执行它没有任何输出，退出码是 WinGet 自己的
+ * 0x8A150001。只看"这个名字在不在 PATH 上"会判成存在——而它每一次安装都必然失败，用户看到的却是
+ * "一键补齐"点下去没反应、或者一个看不懂的退出码。
+ *
+ * 所以健康检查以**有没有版本号输出**为准，而且只缓存成功的结果：失败要能被下一次扫描纠正过来
+ * （用户可能刚装好 winget）。
+ */
+let wingetHealthy = null
+
+async function wingetReady() {
+  if (process.platform !== 'win32') return false
+  if (wingetHealthy === true) return true
+  const result = await run(['winget', '--version'], { timeoutMs: 20_000 })
+  const healthy = result.ok && /\d+\.\d+/.test(String(result.stdout || ''))
+  if (healthy) wingetHealthy = true
+  return healthy
+}
+
 /** 把 catalog 里的 install 声明翻译成一组可执行方案，顺序即优先级。 */
-function plansFor(item) {
+function plansFor(item, options = {}) {
   const source = item.install || {}
   const plans = []
-  if (source.winget && process.platform === 'win32') {
+  // `wingetReady: false` 时**不提供** winget 方案：一个明知跑不通的方案比没有方案更糟，
+  // 用户会把"点了一键补齐没反应"归因成插件坏了。
+  const wingetUsable = options.wingetReady !== false
+  if (source.winget && process.platform === 'win32' && wingetUsable) {
     plans.push({
       mode: 'winget',
       label: `winget install --id ${source.winget} -e`,
@@ -1461,7 +1492,7 @@ export function apply(ctx, config) {
       const data = await scan(state)
       const item = data.items.find((entry) => entry.id === body.id)
       if (!item) return sendJson(res, 404, { ok: false, error: `未知的条目：${body.id}` })
-      const plan = choosePlan(plansFor(item), body.mode)
+      const plan = choosePlan(plansFor(item, { wingetReady: item.wingetUsable }), body.mode)
       if (!plan) return sendJson(res, 400, { ok: false, error: `没有可用的安装方案（${body.mode || 'auto'}）` })
       const job = startJob(state, item, plan)
       sendJson(res, 200, { ok: true, job, plans: item.plans })
@@ -1729,7 +1760,7 @@ export function apply(ctx, config) {
               executed: false,
             }
           }
-          const plan = choosePlan(plansFor(item), args.mode)
+          const plan = choosePlan(plansFor(item, { wingetReady: item.wingetUsable }), args.mode)
           if (!plan) throw new Error(`没有可用的安装方案（mode=${args.mode || 'auto'}）`)
           const job = startJob(state, item, plan)
           return {
@@ -1822,6 +1853,8 @@ export const __test = {
   rootsView,
   normaliseUninstallCommand,
   jobHelpPrompt,
+  plansFor,
+  wingetReady,
 }
 
 // ----------------------------------------------------------------- http helpers
