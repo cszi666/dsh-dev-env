@@ -40,6 +40,7 @@ import {
   rootsFile,
 } from '../paths.js'
 import { describeProbeHint } from '../roots.js'
+import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt } from '../handoff.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
 
@@ -1042,6 +1043,88 @@ check('the hand-off text carries every job, and does not read as a work order', 
     // Both jobs must appear: a summary that dropped the failed one would hide what is worth knowing.
     assert(text.includes('jmeter') && text.includes('tomcat11'), `${lang} must include both jobs`)
   }
+})
+
+// ------------------------------------------------------------------ session handoff
+console.log('\nsession handoff')
+
+check('a handoff is normalised, bounded, and keeps its three lists apart', () => {
+  // The point of this record is to be small enough to read into another conversation, so every field
+  // is bounded; and the three lists must stay distinct, because "still to do" against "already done"
+  // is exactly what stops the next conversation from redoing finished work.
+  const handoff = normaliseHandoff(
+    {
+      summary: '  把 dsh-dev-env 的卸载功能做完  ',
+      todo: ['写注册表路径的卸载', '', '补文档'],
+      doing: ['跑测试'],
+      done: ['后端 uninstallPlanFor', '面板确认流程'],
+      next: '  提交并推送  ',
+      notes: '注意 /I 要改写成 /X',
+      // Unknown fields must be dropped rather than persisted.
+      evil: { nested: true },
+      sessionId: 'ignored-because-explicit-wins',
+    },
+    's-1',
+  )
+  assert(handoff.sessionId === 's-1', 'the explicit session id should win')
+  assert(handoff.summary === '把 dsh-dev-env 的卸载功能做完', `summary was ${JSON.stringify(handoff.summary)}`)
+  assert(handoff.next === '提交并推送', 'next should be trimmed')
+  assert(handoff.todo.length === 2, `blank todo rows should be dropped, got ${JSON.stringify(handoff.todo)}`)
+  assert(handoff.doing.length === 1 && handoff.done.length === 2, 'lists must not be merged')
+  assert(!('evil' in handoff), 'unknown fields must not be persisted')
+  assert(typeof handoff.updatedAt === 'number', 'a save records when it happened')
+
+  // Bounds, because an unbounded handoff defeats the purpose of one.
+  const big = normaliseHandoff({ summary: 'x'.repeat(5000), todo: Array.from({ length: 80 }, (_, i) => `t${i}`) }, 's-2')
+  assert(big.summary.length <= 2000, `summary should be clamped, got ${big.summary.length}`)
+  assert(big.todo.length <= 50, `todo should be capped, got ${big.todo.length}`)
+  // Junk input must not throw: it is fed by a textarea and by a model tool call.
+  for (const junk of [null, undefined, 42, 'text', [], { todo: 'not-a-list' }]) {
+    const row = normaliseHandoff(junk, 's-3')
+    assert(row.todo.length === 0 && row.summary === '', `${JSON.stringify(junk)} should normalise to an empty handoff`)
+  }
+})
+
+check('an empty handoff is recognised, and produces no prompt', () => {
+  assert(isHandoffEmpty(emptyHandoff('s-1')), 'a fresh handoff is empty')
+  assert(isHandoffEmpty(null), 'a missing handoff counts as empty')
+  // Sending an empty handoff would paste a heading with nothing under it into another conversation.
+  assert(handoffPrompt(emptyHandoff('s-1'), 'zh') === null, 'an empty handoff must not produce a prompt')
+  for (const field of ['summary', 'next', 'notes']) {
+    const row = normaliseHandoff({ [field]: '有内容' }, 's-1')
+    assert(!isHandoffEmpty(row), `${field} alone should count as content`)
+    assert(handoffPrompt(row, 'zh'), `${field} alone should still produce a prompt`)
+  }
+  const listOnly = normaliseHandoff({ todo: ['一件事'] }, 's-1')
+  assert(!isHandoffEmpty(listOnly), 'a single todo should count as content')
+})
+
+check('the handoff prompt carries the lists and does not collapse its blank lines', () => {
+  // Same trap as the job help prompt: an absent optional line must not take its blank separator with
+  // it, or the sections run together and the text stops being scannable.
+  const handoff = normaliseHandoff(
+    {
+      summary: '卸载功能',
+      todo: ['注册表路径', '文档'],
+      doing: ['跑测试'],
+      done: ['后端计划函数'],
+      next: '提交',
+      notes: '注意 /I',
+    },
+    's-1',
+  )
+  for (const [lang, needles] of [
+    ['zh', ['接着另一个对话', '当前进展：卸载功能', '还需要做', '注册表路径', '正在做', '跑测试', '已经做完', '后端计划函数', '下一步计划：提交', '注意 /I', '不要再重新推一遍']],
+    ['en', ['continuing work from another conversation', 'Still to do', 'Already done', 'Next step planned', 'Do not re-derive']],
+  ]) {
+    const text = handoffPrompt(handoff, lang)
+    for (const needle of needles) assert(text.includes(needle), `${lang} handoff prompt is missing ${needle}`)
+    assert(/\n\n/.test(text), `${lang} handoff prompt should keep a blank line between sections`)
+  }
+  // With no notes the prompt must still be readable: no doubled blanks where a section was skipped.
+  const noNotes = normaliseHandoff({ summary: '只有一句', todo: ['一件事'] }, 's-1')
+  const text = handoffPrompt(noNotes, 'zh')
+  assert(!/\n\n\n/.test(text), `absent sections must not leave triple newlines:\n${text}`)
 })
 
 // ------------------------------------------------------------------ packaging

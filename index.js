@@ -19,6 +19,7 @@ import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
+import { normaliseHandoff, emptyHandoff, isHandoffEmpty, loadHandoffs, saveHandoffs, handoffPrompt } from './handoff.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -799,6 +800,13 @@ function speedHistoryFile() {
   const file = rootsFile()
   if (!file) return null
   return path.join(path.dirname(file), 'download-speeds.json')
+}
+
+/** 会话交接的存储位置，规则同上：跟着 profile 走，不写进只读的发布物目录。 */
+function handoffsFile() {
+  const file = rootsFile()
+  if (!file) return null
+  return path.join(path.dirname(file), 'handoffs.json')
 }
 
 /** 解压一个 zip。用系统自带的 tar.exe（Win10 1803+），不额外依赖 7-Zip。 */
@@ -1822,6 +1830,77 @@ export function apply(ctx, config) {
         requestId: `dev-env-explain-${randomUUID()}`,
         summary: `已让 DSH 解释 ${item.name}`,
         sessionId: sessionIdOf(body),
+      })
+    })
+
+    // 会话交接：读写**按会话键控**的精简任务状态。
+    //
+    // 为什么按会话分：每个对话有自己的进度，互相不该覆盖。新对话开始时它的交接是空的（还没做事），
+    // 而旧对话的交接要留着，供接手的新对话读取——这正是"到上限后无缝衔接"的机制。
+    register('/dsh-dev-env/api/handoff', async (req, res) => {
+      const method = (req.method || 'GET').toUpperCase()
+      const file = handoffsFile()
+
+      if (method === 'GET') {
+        const url = new URL(req.url || '/', 'http://localhost')
+        const sessionId = url.searchParams.get('sessionId') || ''
+        const all = loadHandoffs(file)
+        // 不带 sessionId 时返回全部索引，供"从别的对话接手"选择来源。
+        if (!sessionId) {
+          return sendJson(res, 200, {
+            ok: true,
+            file,
+            sessions: Object.values(all)
+              .map((row) => ({
+                sessionId: row.sessionId,
+                summary: row.summary,
+                todo: row.todo.length,
+                doing: row.doing.length,
+                done: row.done.length,
+                updatedAt: row.updatedAt,
+              }))
+              .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
+          })
+        }
+        return sendJson(res, 200, { ok: true, file, handoff: all[sessionId] ?? emptyHandoff(sessionId) })
+      }
+
+      if (method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET / POST only' })
+      const body = await readJson(req)
+      // 来自面板的保存：sessionId 必须显式给出（面板从 conversation.view 的 prop 拿到它）。
+      // 没有 sessionId 就不知道该存给谁，宁可拒绝也不猜。
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId：不知道该把交接存给哪个对话' })
+      const all = loadHandoffs(file)
+      const handoff = normaliseHandoff(body.handoff, sessionId)
+      all[sessionId] = handoff
+      if (!saveHandoffs(file, all)) {
+        return sendJson(res, 500, { ok: false, error: `保存失败：${file || '(没有可用的存储位置)'}` })
+      }
+      sendJson(res, 200, { ok: true, handoff })
+    })
+
+    // 把某个对话的交接**投递**给另一个对话：这就是"到上限后无缝衔接"的执行动作。
+    register('/dsh-dev-env/api/handoff/send', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const file = handoffsFile()
+      const all = loadHandoffs(file)
+      const from = typeof body.from === 'string' ? body.from.trim() : ''
+      const handoff = all[from]
+      if (!handoff) return sendJson(res, 404, { ok: false, error: `那个对话还没有交接内容：${from || '(未指定)'}` })
+      const text = handoffPrompt(handoff, body.lang)
+      if (!text) return sendJson(res, 400, { ok: false, error: '这份交接还是空的，先写点内容再投递' })
+      const target = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      return askDsh({
+        req,
+        res,
+        scope,
+        ctx,
+        text,
+        requestId: `dev-env-handoff-${randomUUID()}`,
+        summary: `已把交接投给会话`,
+        sessionId: target || undefined,
       })
     })
 

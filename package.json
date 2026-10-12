@@ -54,6 +54,7 @@
     "paths.js",
     "roots.js",
     "downloads.js",
+    "handoff.js",
     "scripts/check.mjs",
     "scripts/client-cancel.test.mjs",
     "cordis.patch.yml",
