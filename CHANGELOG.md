@@ -9,6 +9,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A download-source picker on one-click install, with a five-second auto-start.** For the entries we
+  fetch ourselves (jmeter, tomcat9, tomcat11) the install button now asks *which source* first: the
+  official one plus the mirrors that were verified — `Apache 官方 (dlcdn)`, `清华 TUNA`, `阿里云`. The
+  first entry is the default, and if nothing is chosen within five seconds it starts on its own, as
+  asked for. That is only defensible because **every source is verified before the countdown begins**:
+  the host resolves and probes each one, a mirror that cannot deliver is filtered out rather than shown
+  as a dead option, and with nothing verified the countdown does not run and nothing is installed.
+  Entries installed through `winget` / `pip` / `npm` show no picker at all — we do not choose how those
+  fetch their packages, so listing sources for them would be a false choice. All six declared sources
+  resolve to the same version of the same archive (jmeter 5.6.3, tomcat9 9.0.122, tomcat11 11.0.26), so
+  switching one changes only who serves it.
 - **“让 DSH 帮我解决” on a job that failed or is still running.** A failure used to end inside the
   panel: the detail area showed the log and the user was left holding it. The button hands the job to
   DSH — the same hand-off the tool explanations already use — and the host composes the message from
@@ -43,6 +54,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A countdown that could never reach zero.** The picker's timer was cleared and re-armed on every
+  render, and the panel re-renders about once a second for its job polling and clock — so the
+  one-second tick was cancelled before it could fire past the first step, and the auto-start would
+  never have happened. The timer now lives in a ref and is re-armed only when the countdown itself
+  changes, and an "already started" guard keeps a render from starting a second install.
+- **The picker was rendered inside a tab branch.** It renders at the panel root now: switching to the
+  "All" tab with the picker open left the state updating but nothing drawn, so the countdown would have
+  run out invisibly and installed something the user could not see.
+- **A winget that cannot run is no longer offered as a plan.** On the development machine
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe` is a 0-byte app-execution-alias stub (the Store
+  never installed DesktopAppInstaller): it runs, prints nothing, and exits `0x8A150001`. `plansFor()`
+  nonetheless offered `winget install` as the preferred plan for all 59 entries that declare a winget
+  id, because the only test was `process.platform === 'win32'` — so every one-click install walked into
+  a dead end. The check is now a health check (winget must answer `--version` with a version), and a
+  negative result is not cached, so installing winget and rescanning brings the plans back. A plan that
+  cannot run is worse than no plan: it reads as a broken plugin.
+- **The Tomcat winget ids named packages that do not exist.** Apache's Tomcat package is unversioned
+  (`Apache.Tomcat`), so `Apache.Tomcat.11` was never installable — that was the reported failure
+  (`0x8A150014`, "找不到与输入条件匹配的程序包"). It could not be verified from here (winget is broken
+  and github.com is unreachable), so rather than guess a plausible-looking id, both entries declare
+  **no** winget id and carry a verified download source instead; `resolveDownload` learned to pick the
+  newest version *directory* (`v11.0.26/`) with the archive inside `bin/`, which is how Apache lists
+  Tomcat, so no version is pinned.
 - **`MsiExec.exe /I` in an `UninstallString` is rewritten to `/X`.** Microsoft's convention is `/X`
   (uninstall), but `/I` (install/repair) really does appear there — MySQL Server and SQL Server
   LocalDB on the development machine both had it. Running it as written from an uninstall button

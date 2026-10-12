@@ -586,7 +586,14 @@ async function scan(state, options = {}) {
             // 面板据此决定"选文件夹"这个入口显不显示（对注册表/PATH 类条目它毫无用处）。
             hint: describeProbeHint(entry),
             install: entry.install ?? {},
-            plans: plansFor(entry, { wingetReady: wingetOk }).map((plan) => ({ mode: plan.mode, label: plan.label, url: plan.url ?? null, note: plan.note ?? null })),
+            plans: plansFor(entry, { wingetReady: wingetOk }).map((plan) => ({
+              mode: plan.mode,
+              label: plan.label,
+              url: plan.url ?? null,
+              note: plan.note ?? null,
+              // 来源列表要能到面板：否则"换源"下拉无从渲染。只有我们自己下载的方案才有它。
+              sources: plan.sources ?? null,
+            })),
           }
           // 卸载方式只对**已安装**的条目计算，而且只在真有时才给：面板因此不需要自己判断
           // "这个工具能不能卸"，也就不会出现按下去没反应的按钮。registry 类型要读注册表，
@@ -647,6 +654,22 @@ async function scan(state, options = {}) {
 }
 
 // ----------------------------------------------------------------- install
+
+/** 一个下载条目的可选来源，供面板显示"换源"下拉。没有列表（单来源）时返回 null。 */
+function downloadSourcesOf(download) {
+  if (!Array.isArray(download?.sources)) return null
+  return download.sources.map((entry) => ({
+    name: entry.name,
+    label: entry.label ?? entry.name,
+    host: (() => {
+      try {
+        return new URL(entry.listing ?? entry.direct).host
+      } catch {
+        return null
+      }
+    })(),
+  }))
+}
 
 /**
  * winget 到底能不能用。
@@ -712,6 +735,9 @@ function plansFor(item, options = {}) {
       mode: 'download',
       label: `自己下载 ${item.name} 的官方压缩包`,
       download: source.download,
+      // 可选来源（官方 + 国内镜像）。面板据此显示"换源"下拉；只有我们自己下载的条目才有它，
+      // 因为 winget / pip / npm 怎么取包不由我们决定。
+      sources: downloadSourcesOf(source.download),
       note: source.downloadNote ?? null,
     })
   }
@@ -1088,12 +1114,16 @@ function startOwnDownload(state, item, plan, job) {
   const work = async () => {
     job.phase = 'download'
     job.activity = '正在解析下载地址…'
-    job.log.push(`下载源：${plan.download.listing ?? plan.download.direct ?? '(未声明)'}`)
+    const chosenLabel = plan.sourceLabel ?? plan.download.listing ?? plan.download.direct ?? '(未声明)'
+    job.source = plan.source ?? null
+    job.log.push(`下载源：${chosenLabel}`)
 
-    const resolved = await resolveDownload(plan.download)
+    // 先解析并**验证**（HEAD/Range 探测）再开始。这一步是"选中的源真的是活的"的保证：
+    // 用户选了镜像、或者倒计时自动选了第一条，都不该在几秒后才发现这个源是坏的。
+    const resolved = await resolveDownload(plan.download, { source: plan.source })
     if (!resolved) {
       job.log.push('没有解析到可下载的文件（列表不可用，或所有候选都返回了错误状态码）')
-      return finish('failed', '找不到可下载的文件')
+      return finish('failed', `找不到可下载的文件${plan.sourceLabel ? `（来源：${plan.sourceLabel}）` : ''}`)
     }
     job.url = resolved.url
     job.version = resolved.version ?? null
@@ -1494,8 +1524,48 @@ export function apply(ctx, config) {
       if (!item) return sendJson(res, 404, { ok: false, error: `未知的条目：${body.id}` })
       const plan = choosePlan(plansFor(item, { wingetReady: item.wingetUsable }), body.mode)
       if (!plan) return sendJson(res, 400, { ok: false, error: `没有可用的安装方案（${body.mode || 'auto'}）` })
+      // 面板可以在来源下拉里指定一个来源。命名错了就明确报错，不悄悄退回另一个源。
+      if (body.source) {
+        const available = downloadSourcesOf(plan.download)
+        const chosen = available?.find((entry) => entry.name === body.source)
+        if (!chosen) return sendJson(res, 400, { ok: false, error: `这个方案没有名为 ${body.source} 的下载来源` })
+        plan.source = chosen.name
+        plan.sourceLabel = `${chosen.label}（${chosen.host ?? '-'}）`
+      }
       const job = startJob(state, item, plan)
       sendJson(res, 200, { ok: true, job, plans: item.plans })
+    })
+
+    // 列出某个下载方案的可用来源，并**逐个真验证**（解析 + HEAD/Range 探测）。
+    // 面板用它填"换源"下拉：只列出真的能下的，坏镜像在这里就被挡掉，不会变成一个选了没反应的选项。
+    register('/dsh-dev-env/api/sources', async (req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const id = url.searchParams.get('id')
+      const data = await scan(state)
+      const item = data.items.find((entry) => entry.id === id)
+      if (!item) return sendJson(res, 404, { ok: false, error: `未知的条目：${id}` })
+      const plan = plansFor(item, { wingetReady: item.wingetUsable }).find((row) => row.mode === 'download')
+      if (!plan) return sendJson(res, 404, { ok: false, error: '这个条目没有自己下载的方案' })
+      const available = downloadSourcesOf(plan.download)
+      if (!available) {
+        return sendJson(res, 200, { ok: true, sources: [{ name: null, label: '默认来源', verified: true, total: null }] })
+      }
+      // 并行验证：每个来源各自解析一次，慢的那个不该拖住整份列表。
+      const checked = await Promise.all(
+        available.map(async (entry) => {
+          const resolved = await resolveDownload(plan.download, { source: entry.name })
+          return {
+            name: entry.name,
+            label: entry.label,
+            host: entry.host,
+            verified: Boolean(resolved),
+            total: resolved?.total ?? null,
+            version: resolved?.version ?? null,
+            url: resolved?.url ?? null,
+          }
+        }),
+      )
+      sendJson(res, 200, { ok: true, sources: checked })
     })
 
     register('/dsh-dev-env/api/uninstall', async (req, res) => {

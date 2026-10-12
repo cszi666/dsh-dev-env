@@ -45,6 +45,13 @@ export async function runClientCancelTests(harness) {
 
   const drain = () => new Promise((resolve) => setImmediate(resolve))
 
+  /** Run the effects that a completed render left pending, without touching pending network. */
+  const runPendingEffects = () => {
+    const effects = react.takeAfterRender()
+    for (const effect of effects) effect.fn()
+    return effects.length
+  }
+
   async function advance(ms) {
     const target = timers.now + ms
     for (;;) {
@@ -62,6 +69,20 @@ export async function runClientCancelTests(harness) {
         /* a polling failure is not what is under test */
       }
       await drain()
+      // A timer almost always results in a state update, and the *next* timer is often scheduled by
+      // the resulting effect. A browser gets that for free; here the effects are ours to run, and
+      // without this a one-second interval advances exactly once per advance() call.
+      for (let pass = 0; pass < 10; pass += 1) {
+        if (react.queue.size) {
+          const items = [...react.queue]
+          react.queue.clear()
+          for (const item of items) item()
+          await drain()
+          continue
+        }
+        if (runPendingEffects() === 0) break
+        await drain()
+      }
     }
     timers.now = target
     await drain()
@@ -98,26 +119,40 @@ export async function runClientCancelTests(harness) {
         return { type, props: Object.assign({}, props || {}, flat === undefined ? {} : { children: flat }) }
       },
       useState,
-      useCallback(fn) {
+      useCallback(fn, deps) {
         const slot = slotAt(undefined)
-        if (!slot.value) slot.value = fn
-        return slot.value
+        // A faithful-enough memoisation: compare the dependency array, the way React does. Getting
+        // this wrong is what made an earlier version of this shim re-run effects endlessly (a dep
+        // that changed identity every render), which is why effects were once "run once" — and that
+        // in turn made any dependency-driven effect untestable, including a countdown.
+        if (slot.value && Array.isArray(deps) && Array.isArray(slot.value.deps) &&
+            deps.length === slot.value.deps.length &&
+            deps.every((dep, index) => Object.is(dep, slot.value.deps[index]))) {
+          return slot.value.fn
+        }
+        slot.value = { fn, deps: Array.isArray(deps) ? [...deps] : null }
+        return fn
       },
       useRef(initial) {
         const slot = slotAt(undefined)
         if (!slot.value) slot.value = { current: initial }
         return slot.value
       },
-      useEffect(fn) {
-        // Deliberately simplified: each effect runs once, when it first appears. Reconstructing
-        // React's dependency comparison here would mean also reconstructing useCallback's
-        // memoisation, and an approximation of the two together re-runs effects that real React
-        // would not — the panel's polling effect then restarts endlessly. Every effect this panel
-        // mounts is a mount effect, so "once" is the honest behaviour to test against. The cost is
-        // that re-running effects is not exercised here, which is not what this test is for.
+      useEffect(fn, deps) {
         const slot = slotAt(undefined)
-        if (slot.value === true) return
-        slot.value = true
+        const previous = slot.value
+        const firstRun = previous === undefined
+        // No dependency array: run after every render, like React.
+        if (!firstRun && !Array.isArray(deps)) {
+          afterRender.push({ fn })
+          return
+        }
+        if (!firstRun && Array.isArray(deps) && Array.isArray(previous.deps) &&
+            deps.length === previous.deps.length &&
+            deps.every((dep, index) => Object.is(dep, previous.deps[index]))) {
+          return
+        }
+        slot.value = { deps: Array.isArray(deps) ? [...deps] : null }
         afterRender.push({ fn })
       },
     }
@@ -469,10 +504,14 @@ export async function runClientCancelTests(harness) {
       let roots = extra.roots ?? []
       const inventory = extra.inventory ?? INVENTORY
       mock = ({ path: target, method, body }) => {
-        // Per-test POST answers, matched before the built-in routes so a test can pin one endpoint
-        // (uninstall, for instance) without replacing the whole double.
+        // Per-test answers for one endpoint, matched before the built-in routes so a test can pin one
+        // (uninstall, or the source list) without replacing the whole double. POST routes take
+        // precedence because they are the more specific intent.
         for (const [suffix, answer] of Object.entries(extra.postRoutes || {})) {
           if (target.endsWith(suffix)) return answer(body)
+        }
+        for (const [suffix, answer] of Object.entries(extra.getRoutes || {})) {
+          if (target.includes(suffix) && (method === undefined || method === 'GET')) return answer(body)
         }
         if (target.includes('/inventory')) return { status: 200, body: inventory }
         if (target.includes('/roots')) {
@@ -527,10 +566,13 @@ export async function runClientCancelTests(harness) {
      * Declared before the checks that use it — a `const` further down would be a temporal dead zone,
      * which is exactly how these first failed.
      */
-    const inventoryWith = (item) =>
+    const inventoryWith = (item, extraSummary = {}) =>
       Object.assign({}, INVENTORY, {
         items: [item],
-        summary: { total: 1, installed: item.installed ? 1 : 0, missing: item.installed ? 0 : 1, essentialMissing: 0 },
+        summary: Object.assign(
+          { total: 1, installed: 0, missing: 1, essentialMissing: 0 },
+          extraSummary,
+        ),
       })
 
     await harness.check('a running job offers Cancel on its row, and no Delete', async () => {
@@ -837,6 +879,121 @@ export async function runClientCancelTests(harness) {
       if (posted.jobId !== 'job1') throw new Error(`posted jobId ${JSON.stringify(posted.jobId)}`)
       if (posted.lang !== 'zh') throw new Error(`posted lang ${JSON.stringify(posted.lang)}`)
       if (!visibleTextOf(tree).includes('已交给 DSH')) throw new Error('the user should be told it was handed over')
+    })
+
+    // ------------------------------------------------------------ source picker
+    // "Pick a download source, and if nothing is chosen the first (most reliable) route starts on its
+    // own after five seconds." Auto-starting is only defensible because host verifies every source
+    // first, so the countdown begins on a proven route rather than on a hope.
+
+    const downloadItem = () => ({
+      id: 'jmeter',
+      name: 'Apache JMeter',
+      nameEn: 'Apache JMeter',
+      category: 'language',
+      essential: true,
+      installed: false,
+      version: null,
+      where: null,
+      reason: '候选路径都不存在或匹配不到版本号',
+      hint: null,
+      install: {},
+      uninstall: null,
+      plans: [
+        { mode: 'download', label: '自己下载 Apache JMeter 的官方压缩包', url: null, note: null,
+          sources: [
+            { name: 'apache', label: 'Apache 官方 (dlcdn)', host: 'dlcdn.apache.org' },
+            { name: 'tuna', label: '清华 TUNA', host: 'mirrors.tuna.tsinghua.edu.cn' },
+          ] },
+        { mode: 'page', label: '打开官方下载页', url: 'https://jmeter.apache.org/', note: null, sources: null },
+      ],
+    })
+
+    const verifiedSources = {
+      status: 200,
+      body: {
+        ok: true,
+        sources: [
+          { name: 'apache', label: 'Apache 官方 (dlcdn)', host: 'dlcdn.apache.org', verified: true, version: '5.6.3', total: 90_631_635 },
+          { name: 'tuna', label: '清华 TUNA', host: 'mirrors.tuna.tsinghua.edu.cn', verified: true, version: '5.6.3', total: 90_631_635 },
+          { name: 'dead', label: '坏镜像', host: 'dead.example', verified: false, version: null, total: null },
+        ],
+      },
+    }
+
+    await harness.check('the install button opens a source picker, listing only verified sources', async () => {
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(downloadItem()),
+        getRoutes: { '/api/sources': () => verifiedSources },
+      })
+      clickButton(root, '一键补齐')
+      await flush()
+      const text = visibleTextOf(tree)
+      if (!text.includes('选择下载来源')) throw new Error(`the picker should open, got: ${text.slice(0, 240)}`)
+      if (!text.includes('Apache 官方')) throw new Error('the sources should be listed')
+      if (!text.includes('清华 TUNA')) throw new Error('the mirror should be listed')
+      // A source that failed verification must not appear: offering it would be a false option.
+      if (text.includes('坏镜像')) throw new Error('an unverified source must not be offered')
+      if (fetchCalls.some((call) => call.path.endsWith('/api/install'))) {
+        throw new Error('opening the picker must not start an install')
+      }
+    })
+
+    await harness.check('choosing a source starts with exactly that source', async () => {
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(downloadItem()),
+        getRoutes: { '/api/sources': () => verifiedSources },
+      })
+      clickButton(root, '一键补齐')
+      await flush()
+      const starts = allNodes(tree).filter(
+        (node) => node.type === 'button' && textOf(node).trim() === '立即用这个来源开始',
+      )
+      if (starts.length !== 2) throw new Error(`expected one start button per verified source, got ${starts.length}`)
+      press(starts[1])
+      await flush()
+      const installs = fetchCalls.filter((call) => call.path.endsWith('/api/install'))
+      if (installs.length !== 1) throw new Error(`expected one install, got ${installs.length}`)
+      if (installs[0].body.source !== 'tuna') throw new Error(`posted source ${JSON.stringify(installs[0].body.source)}`)
+      if (installs[0].body.mode !== 'download') throw new Error(`posted mode ${JSON.stringify(installs[0].body.mode)}`)
+    })
+
+    await harness.check('five seconds without a choice starts the first route by itself', async () => {
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(downloadItem()),
+        getRoutes: { '/api/sources': () => verifiedSources },
+      })
+      clickButton(root, '一键补齐')
+      await flush()
+      if (!visibleTextOf(tree).includes('秒后自动用第一条')) throw new Error('the countdown should be visible')
+      if (fetchCalls.some((call) => call.path.endsWith('/api/install'))) throw new Error('it must wait for the countdown')
+
+      // Advance generously and assert the outcome rather than the exact second.
+      await advance(6_000)
+      await flush()
+      const installs = fetchCalls.filter((call) => call.path.endsWith('/api/install'))
+      if (installs.length !== 1) throw new Error(`expected the default route to start, got ${installs.length} installs`)
+      if (installs[0].body.source !== 'apache') throw new Error(`auto-start used ${JSON.stringify(installs[0].body.source)}`)
+      if (visibleTextOf(tree).includes('选择下载来源')) throw new Error('the picker should close once it starts')
+    })
+
+    await harness.check('no verified source means no auto-start', async () => {
+      // The fallback that makes auto-start safe: with nothing verified the countdown must not run and
+      // nothing may be installed — there is no proven route to take.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(downloadItem()),
+        getRoutes: {
+          '/api/sources': () => ({ status: 200, body: { ok: true, sources: [{ name: 'apache', label: 'Apache', verified: false }] } }),
+        },
+      })
+      clickButton(root, '一键补齐')
+      await flush()
+      if (!visibleTextOf(tree).includes('没有验证通过的来源')) throw new Error('an empty result should say so')
+      await advance(8_000)
+      await flush()
+      if (fetchCalls.some((call) => call.path.endsWith('/api/install'))) {
+        throw new Error('nothing verified means nothing may start on its own')
+      }
     })
 
     // ------------------------------------------------------------ extra folders

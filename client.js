@@ -19,6 +19,14 @@ window.__ModuleLoader__.load({
     const API = '/dsh-dev-env/api'
     const PANEL_ID = 'dev-env'
     const NS = 'dsh-dev-env'
+    /**
+     * 来源选择器的自动开始倒计时（秒）。
+     *
+     * 超时**会真的开始安装**——这是用户明确要求的："五秒未选择时默认第一条最稳定的路线"。
+     * 之所以可以这样做，是因为倒计时只在**host 已经逐个验证过来源**之后才开始：默认那条是
+     * 一条被证明能下的路，而不是一条希望。列表为空时不会自动开始任何东西。
+     */
+    const AUTO_START_SECONDS = 5
 
     // 内置词条：即使 locale 服务不可用，面板也完整可读
     const DICT_ZH = {
@@ -101,6 +109,14 @@ window.__ModuleLoader__.load({
       askHelpTitle: '把这条任务的错误、命令和日志交给 DSH，让它诊断并给出这台机器上的下一步',
       askingHelp: '正在转交…',
       helpSent: '已交给 DSH，去看对话',
+      pickSource: '选择下载来源',
+      pickSourceHint: '只列出刚刚验证过、真的能下的来源。',
+      pickSourceAuto: '秒后自动用第一条（最稳的路线）开始',
+      pickSourceNow: '立即用这个来源开始',
+      pickSourceChecking: '正在逐个验证来源…',
+      pickSourceNone: '没有验证通过的来源。只能打开官网自己下载。',
+      pickSourceFailed: '未通过验证（列表不可用或文件取不到）',
+      pickSourceCancel: '先不装',
       speed: '速率',
       eta: '剩余',
       fromOwnDownload: '自己下载',
@@ -189,6 +205,14 @@ window.__ModuleLoader__.load({
       askHelpTitle: 'Hand this job’s error, command and log to DSH so it can diagnose it and say what to do next on this machine',
       askingHelp: 'Handing over…',
       helpSent: 'Handed to DSH — check the conversation',
+      pickSource: 'Choose a download source',
+      pickSourceHint: 'Only sources that were just verified are listed.',
+      pickSourceAuto: 's until the first (most reliable) route starts on its own',
+      pickSourceNow: 'Start now with this source',
+      pickSourceChecking: 'Verifying each source…',
+      pickSourceNone: 'No source passed verification. Only the download page is left.',
+      pickSourceFailed: 'did not verify (listing unavailable or file not fetchable)',
+      pickSourceCancel: 'Not now',
       speed: 'rate',
       eta: 'left',
       fromOwnDownload: 'own download',
@@ -233,7 +257,22 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------ styles
 
     const CSS = `
-.dsh-de-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base)}
+.dsh-de-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);position:relative}
+/* 来源选择器：浮在面板之上，而不是挤进某一行——它要的是"现在做一个决定"，不是"看一行详情"。 */
+.dsh-de-modal{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:20}
+.dsh-de-dialog{width:100%;max-width:520px;max-height:80%;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+.dsh-de-dialog h2{margin:0 0 4px;font-size:14px;font-weight:600}
+.dsh-de-dialog .dsh-de-pickq{margin-bottom:10px}
+.dsh-de-count{font-size:12px;color:var(--dsw-alias-brand-primary);margin:10px 0 4px}
+.dsh-de-bar-slim{height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin-bottom:10px}
+.dsh-de-bar-slim span{display:block;height:100%;background:var(--dsw-alias-brand-primary);transition:width 1s linear}
+.dsh-de-source{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-de-source[data-first="1"]{border-color:var(--dsw-alias-brand-primary)}
+.dsh-de-sourcemain{flex:1;min-width:0}
+.dsh-de-sourcename{font-weight:500}
+.dsh-de-sourcehost{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-de-sourcetag{font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
+.dsh-de-sourcebad{color:var(--dsw-alias-label-secondary);opacity:.7}
 .dsh-de-scroll{flex:1;min-height:0;overflow:auto;padding:0 20px 28px;display:flex;flex-direction:column}
 .dsh-de-head{padding:18px 20px 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .dsh-de-headrow{display:flex;align-items:flex-start;gap:12px}
@@ -503,6 +542,9 @@ window.__ModuleLoader__.load({
       const [confirmUninstall, setConfirmUninstall] = React.useState(null)
       // 正在把哪条任务转交给 DSH 求助（按钮要锁住，避免重复投递同一份日志）。
       const [helping, setHelping] = React.useState(null)
+      // 下载来源选择器：{ itemId, sources, checking, secondsLeft }。
+      // 只对"我们自己下载"的条目出现——winget/pip/npm 怎么取包不由我们决定，列出源就是假选项。
+      const [picker, setPicker] = React.useState(null)
       const runningRef = React.useRef(0)
 
       const load = React.useCallback(async (refresh) => {
@@ -562,13 +604,16 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer)
       }, [jobs])
 
-      const install = async (item, mode) => {
+      const install = async (item, mode, source) => {
         setBusy(item.id)
         try {
+          const body = { id: item.id, mode: mode || 'auto' }
+          // 只有用户/倒计时真的选了来源才带上它；不带就是 host 的默认来源。
+          if (source) body.source = source
           await api('/install', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: item.id, mode: mode || 'auto' }),
+            body: JSON.stringify(body),
           })
           const payload = await api('/jobs')
           setJobs(payload.jobs || [])
@@ -759,6 +804,81 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * 打开下载来源选择器：先让 host **逐个验证**来源，再开始 5 秒倒计时。
+       *
+       * 倒计时是刻意从"来源已验证"那一刻开始的，而不是从点击那一刻：如果验证慢，用户在倒计时
+       * 还没结束时就看着一个空列表，超时后自动开始的那条他根本没机会看清。验证结果只会包含真能
+       * 下的来源，所以"默认第一条"是一条被验证过的路，而不是一条希望。
+       */
+      const openSourcePicker = async (item) => {
+        autoStartedRef.current = false
+        setPicker({ item, itemId: item.id, sources: null, checking: true, secondsLeft: null })
+        try {
+          const payload = await api(`/sources?id=${encodeURIComponent(item.id)}`)
+          const sources = (payload.sources || []).filter((entry) => entry.verified)
+          setPicker({ item, itemId: item.id, sources, checking: false, secondsLeft: AUTO_START_SECONDS })
+        } catch (err) {
+          setPicker(null)
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      const closePicker = () => {
+        // 关掉就必须把待触发的定时器撤掉：否则用户点了"先不装"，几秒后仍会自己开始安装。
+        if (countdownRef.current) clearTimeout(countdownRef.current)
+        autoStartedRef.current = true
+        setPicker(null)
+      }
+
+      // install 定义在后面；用 ref 让倒计时的副作用不必依赖声明顺序。
+      const installRef = React.useRef(null)
+      // 倒计时的定时器与"是否已经自动开始"的标记。放在 ref 里，避免重渲染把待触发的定时器清掉。
+      const countdownRef = React.useRef(null)
+      const autoStartedRef = React.useRef(false)
+
+      // 倒计时：只在**来源已验证**（checking 结束）之后跑。归零就自动用第一条开始——
+      // 这是用户明确要的语义。列表为空时什么都不做：没有验证过的路可走，就不该自动动手。
+      //
+      // 定时器放在 ref 里，而不是让 effect 的清理函数去管：面板每 1 秒左右会因为轮询和时钟重渲染，
+      // 而每次重渲染都会先跑清理——那样一个 1 秒的定时器永远等不到到期，倒计时会卡住不动，
+      // 超时也就永远不会自动开始。（第一版就是这样，靠"tick 只出现一次"才看出来。）
+      //
+      // 条目随 picker 一起存下来（picker.item），而不是从 `items` 里现查：`items` 定义在下面，
+      // 在这里引用它是暂时性死区——这个错误在本文件里已经犯过一次了。
+      React.useEffect(() => {
+        if (!picker || picker.checking || picker.secondsLeft === null) return undefined
+        if (picker.secondsLeft <= 0) {
+          // 只自动开始一次，否则重渲染会反复触发。
+          if (autoStartedRef.current) return undefined
+          autoStartedRef.current = true
+          const first = picker.sources[0]?.name
+          if (first === undefined) return undefined
+          const { item } = picker
+          setPicker(null)
+          installRef.current?.(item, 'download', first)
+          return undefined
+        }
+        countdownRef.current = setTimeout(() => {
+          setPicker((cur) => (cur ? { ...cur, secondsLeft: cur.secondsLeft - 1 } : cur))
+        }, 1000)
+        return () => {
+          if (countdownRef.current) clearTimeout(countdownRef.current)
+        }
+        // 只依赖倒计时本身与"是否已验证"：这两者才是决定行为的东西。
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [picker?.secondsLeft, picker?.checking, picker?.itemId])
+
+      /** 用户确认（或倒计时归零）后真正开始：带上选中的来源。 */
+      const startFromPicker = (item, sourceName) => {
+        const chosen = sourceName ?? picker?.sources?.[0]?.name ?? undefined
+        if (countdownRef.current) clearTimeout(countdownRef.current)
+        autoStartedRef.current = true
+        setPicker(null)
+        install(item, 'download', chosen)
+      }
+      installRef.current = install
+
+      /**
        * 把一条失败/卡住的任务交给 DSH 求助。
        *
        * 面板只把**事实**送过去（状态、命令、错误、日志尾部），让 DSH 去查证和解决——
@@ -794,6 +914,66 @@ window.__ModuleLoader__.load({
 
       const chip = (className, label, value) =>
         h('span', { className: `dsh-de-chip ${className}` }, h('b', null, String(value)), h('span', null, label))
+
+      /**
+       * 来源选择器。刻意在**根节点这一层**渲染，而不是放进页签分支里：它覆盖整块面板，而且它
+       * 带着一个会自己到点的倒计时。放进 `tab === 'missing'` 分支的话，用户切到「全部」再点补齐时
+       * 状态照常更新、抽屉却根本没画出来——倒计时会在看不见的地方跑完并自动装上一个他看不到的任务。
+       */
+      const sourcePicker = picker
+        ? h(
+            'div',
+            { className: 'dsh-de-modal' },
+            h(
+              'div',
+              { className: 'dsh-de-dialog' },
+              h('h2', null, `${t('pickSource')} · ${itemName(picker.item || { name: picker.itemId })}`),
+              h('div', { className: 'dsh-de-pickq' }, t('pickSourceHint')),
+              picker.checking
+                ? h('div', { className: 'dsh-de-msg' }, t('pickSourceChecking'))
+                : picker.sources.length
+                  ? [
+                      // 倒计时条：让"还剩几秒就自动开始"看得见，而不是一件突然发生的事。
+                      h('div', { className: 'dsh-de-count', key: 'count' }, `${picker.secondsLeft} ${t('pickSourceAuto')}`),
+                      h(
+                        'div',
+                        { className: 'dsh-de-bar-slim', key: 'bar' },
+                        h('span', {
+                          style: { width: `${Math.max(0, Math.min(100, (picker.secondsLeft / AUTO_START_SECONDS) * 100))}%` },
+                        }),
+                      ),
+                      ...picker.sources.map((source, index) =>
+                        h(
+                          'div',
+                          { className: 'dsh-de-source', key: source.name ?? index, 'data-first': index === 0 ? '1' : '0' },
+                          h(
+                            'div',
+                            { className: 'dsh-de-sourcemain' },
+                            h('div', { className: 'dsh-de-sourcename' }, source.label || source.name || '默认来源'),
+                            h(
+                              'div',
+                              { className: 'dsh-de-sourcehost' },
+                              `${source.host ?? ''}${source.version ? ` · v${source.version}` : ''}`,
+                            ),
+                          ),
+                          index === 0 ? h('span', { className: 'dsh-de-sourcetag' }, '默认') : null,
+                          h(
+                            'button',
+                            { className: 'dsh-de-btn', onClick: () => startFromPicker(picker.item, source.name) },
+                            t('pickSourceNow'),
+                          ),
+                        ),
+                      ),
+                    ]
+                  : h('div', { className: 'dsh-de-msg' }, t('pickSourceNone')),
+              h(
+                'div',
+                { className: 'dsh-de-pick' },
+                h('button', { className: 'dsh-de-btn', onClick: closePicker }, t('pickSourceCancel')),
+              ),
+            ),
+          )
+        : null
 
       return h(
         'div',
@@ -972,7 +1152,9 @@ window.__ModuleLoader__.load({
                                 {
                                   className: 'dsh-de-btn primary',
                                   disabled: isBusy,
-                                  onClick: () => install(item, 'auto'),
+                                  onClick: () => (item.plans || []).find((plan) => plan.mode === 'download')?.sources
+                                    ? openSourcePicker(item)
+                                    : install(item, 'auto'),
                                 },
                                 isBusy ? t('installing') : t('install'),
                               )
@@ -1217,6 +1399,9 @@ window.__ModuleLoader__.load({
               : h('div', { className: 'dsh-de-msg' }, t('noJobs')),
           ),
         ),
+        // 在根节点渲染：它覆盖整块面板，并且带着一个会自己到点的倒计时，
+        // 所以绝不能藏在某个页签分支里面（藏在里面时，切到别的页签会让倒计时在看不见的地方跑完）。
+        sourcePicker,
       )
     }
 

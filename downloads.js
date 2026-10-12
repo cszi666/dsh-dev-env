@@ -472,6 +472,24 @@ export function filesInListing(html, baseUrl) {
 }
 
 /**
+ * Mirrors of one project are interchangeable: dlcdn, TUNA, Aliyun and USTC all serve the same tree
+ * with a different host. So a source spec can carry a **named list**, the caller picks one by name,
+ * and everything else — the discovery pattern, the sub-path — is shared.
+ *
+ * Accepts the older single-source shape too, so nothing that already worked stops working.
+ * Returns null when a name was asked for that the list does not have, so the caller reports an
+ * unknown mirror instead of silently using a different one.
+ */
+export function withSourceName(spec, name) {
+  if (!spec || typeof spec !== 'object') return spec
+  if (name && Array.isArray(spec.sources)) {
+    const chosen = spec.sources.find((entry) => entry.name === name)
+    return chosen ? { ...spec, ...chosen } : null
+  }
+  return spec
+}
+
+/**
  * Resolve an install source to a concrete, verified file URL.
  *
  * The catalog cannot hardcode these: Apache's `dlcdn` mirror only keeps the current release and its
@@ -483,14 +501,21 @@ export function filesInListing(html, baseUrl) {
  *   { direct: 'https://…/file.zip' }                 a URL that never changes
  *   { listing: 'https://…/binaries/', fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' }
  *                                                    pick the newest match from a directory listing
- *   { fallback: 'https://archive…/binaries/' }       tried (same rules) when the primary fails
+ *   { listing: 'https://…/tomcat-11/', directoryPattern: '^v(11\\.[\\d.]+)/$',
+ *     subPath: 'v{version}/bin/apache-tomcat-{version}.zip' }
+ *                                                    version *directories*, the file inside them
+ *   { sources: [{ name: 'apache', … }, { name: 'tuna', … }] }
+ *                                                    interchangeable mirrors; `options.source` chooses
+ *   { fallback: … }                                  tried (same rules) when the primary fails
  *
  * `probe` is the same HEAD/Range check the downloader uses, so "verified" means the server really
- * answers with the file — not that the URL merely looks right.
+ * answers with the file — not that the URL merely looks right. That is what keeps a dead mirror out of
+ * a picker: it fails here instead of appearing as an option.
  */
 export async function resolveDownload(spec, options = {}) {
-  const { fetchImpl = fetch, probe = probeRemote, signal, timeoutMs = 15000 } = options
-  if (!spec || typeof spec !== 'object') return null
+  const { fetchImpl = fetch, probe = probeRemote, signal, timeoutMs = 15000, source } = options
+  const chosen = withSourceName(spec, source)
+  if (!chosen) return null
 
   const fetchText = async (url) => {
     const controller = new AbortController()
@@ -550,11 +575,20 @@ export async function resolveDownload(spec, options = {}) {
     return matches
   }
 
-  for (const entry of [spec, spec.fallback]) {
+  // `chosen` rather than `spec`: a named pick may override listing/subPath, and its `fallback` (if
+  // any) must come along with it. A list without a per-source fallback still works — each mirror is
+  // itself a fallback for the others, and the caller can try the next one.
+  for (const entry of [chosen, chosen.fallback]) {
     for (const candidate of await candidatesFrom(entry)) {
       const info = await probe(candidate.url, { fetchImpl, signal, timeoutMs })
       if (info && info.status >= 200 && info.status < 300) {
-        return { ...candidate, total: info.total ?? null, etag: info.etag ?? null, lastModified: info.lastModified ?? null }
+        return {
+          ...candidate,
+          source: chosen.name ?? null,
+          total: info.total ?? null,
+          etag: info.etag ?? null,
+          lastModified: info.lastModified ?? null,
+        }
       }
     }
   }

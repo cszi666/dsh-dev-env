@@ -335,6 +335,43 @@ job without an exit code used to render one in the middle of the facts).
 Still to exercise by hand: the round trip — click it, watch the question arrive in the session, and
 confirm the answer is useful. The earlier "let DSH explain a tool" flow was verified that way.
 
+### 10. Download-source picker — **done, unreleased**
+
+Requested after 1.1.2: one-click install should offer a choice of download source, with the first
+(most reliable) route starting on its own after five seconds if nothing is chosen.
+
+Two things were verified before building it, because the request assumed them:
+
+- **The mirrors work.** 清华 TUNA and 阿里云 resolve the same archives as Apache's own mirror, to the
+  same versions (jmeter 5.6.3, tomcat9 9.0.122, tomcat11 11.0.26). 中科大 does not resolve Tomcat's
+  directory layout and Huawei's Tomcat tree is not shaped like a version listing — both were left out
+  rather than shipped as options that fail.
+- **Latency, not throughput, is where a mirror helps.** A 512 KB sample puts all four within noise of
+  each other (0.5–1.0 MB/s; domestic mirrors sync from upstream, so they are not a faster copy). What is
+  measurably better is listing resolution — 253–360 ms for TUNA against 279–963 ms for dlcdn. The honest
+  pitch is therefore *another reachable route*, which matters here because `github.com` is blocked.
+
+**Auto-start is only safe because of the verification order.** The countdown does not begin until the
+host has resolved and HEAD-probed every source; unverified mirrors are filtered out of the list, and if
+nothing verifies the countdown never runs and nothing is installed. The default fires on a route that
+was just proven, not on a hope. Entries whose packages come from `winget` / `pip` / `npm` show no picker
+at all: we do not choose how those fetch, so a source list there would be a false choice.
+
+Three defects were found while building it, two in the panel rather than the plumbing:
+
+1. **The countdown could never reach zero.** Its timer was cleared and re-armed on every render, and the
+   panel re-renders about once a second for job polling and the clock, so the one-second tick was
+   cancelled before it could fire past the first step. It lives in a ref now.
+2. **The picker was rendered inside the `tab === 'missing'` branch.** With the "All" tab selected the
+   state updated and nothing was drawn: the countdown would have expired invisibly and installed
+   something the user could not see. It renders at the panel root now.
+3. **The test double could not have caught either.** Its `useEffect` had been simplified to "run once per
+   slot" to dodge a false dependency loop, which made every dependency-driven effect untestable, and
+   `advance()` fired timers without running the effects they scheduled, so a one-second interval
+   advanced exactly once per call. Both are fixed — effects now compare dependencies the way React does,
+   and `advance()` drains the effect queue between timers. Until those two were fixed, defect 1 was
+   invisible to the suite.
+
 ## Known gaps and unverified paths
 
 - **"Let DSH explain this tool"** was verified working by hand (the question arrived in the session).

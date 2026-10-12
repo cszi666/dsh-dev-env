@@ -267,14 +267,24 @@ export const CATALOG = [
         '%ProgramFiles%\\apache-jmeter-*', '%ProgramData%\\apache-jmeter-*',
         '%DRIVES%\\apache-jmeter-*', '%DRIVES%\\Tools\\apache-jmeter-*',
         '%DSH_DEV_ENV_ROOTS%\\apache-jmeter-*'] },
-    // 自己下载的候选方案。指向**目录列表**而不是具体文件：dlcdn 只保留当前版本，文件名里带版本号，
-    // 写死的那一刻就开始腐烂，而 404 和"网络不通"长得一模一样，没人会发现问题。
-    // archive.apache.org 保留所有版本，作为列表不可用时的退路。
+    // 自己下载的来源，**顺序即默认顺序**：官方源排第一（最权威、版本最新），国内镜像跟在后面。
+    // 只有我们自己下载的条目才有"换源"这件事——winget / pip / npm 怎么取包不由我们决定，
+    // 所以那些条目不显示来源下拉，避免出现选了没反应的选项。
     install: { winget: 'Apache.JMeter', page: 'https://jmeter.apache.org/download_jmeter.cgi',
-      download: { listing: 'https://dlcdn.apache.org/jmeter/binaries/',
-        fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$',
-        fallback: { listing: 'https://archive.apache.org/dist/jmeter/binaries/',
-          fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' } } } },
+      download: { sources: [
+        { name: 'apache', label: 'Apache 官方 (dlcdn)',
+          listing: 'https://dlcdn.apache.org/jmeter/binaries/',
+          fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$',
+          // archive 保留所有版本，作为列表不可用时的退路。
+          fallback: { listing: 'https://archive.apache.org/dist/jmeter/binaries/',
+            fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' } },
+        { name: 'tuna', label: '清华 TUNA',
+          listing: 'https://mirrors.tuna.tsinghua.edu.cn/apache/jmeter/binaries/',
+          fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' },
+        { name: 'aliyun', label: '阿里云',
+          listing: 'https://mirrors.aliyun.com/apache/jmeter/binaries/',
+          fileNamePattern: '^apache-jmeter-([\\d.]+)\\.zip$' },
+      ] } } },
 
   { id: 'zentao', name: '禅道 ZenTao', nameEn: 'ZenTao', category: 'test',
     probe: { kind: 'pathList', file: 'app\\zentao\\VERSION', pattern: '([\\d.]+)',
@@ -385,9 +395,14 @@ export const CATALOG = [
     // 也不给一个明知找不到的包 id。要恢复 winget 方案，先确认 id 真的存在（本机 winget 是坏的，
     // 查不了，这就是为什么没有猜一个"看起来对"的 id）。
     install: { page: 'https://tomcat.apache.org/download-90.cgi',
-      download: { listing: 'https://dlcdn.apache.org/tomcat/tomcat-9/',
-        directoryPattern: '^v(9\\.[\\d.]+)/$',
-        subPath: 'v{version}/bin/apache-tomcat-{version}.zip' } } },
+      download: { sources: [
+        { name: 'apache', label: 'Apache 官方 (dlcdn)', listing: 'https://dlcdn.apache.org/tomcat/tomcat-9/',
+          directoryPattern: '^v(9\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+        { name: 'tuna', label: '清华 TUNA', listing: 'https://mirrors.tuna.tsinghua.edu.cn/apache/tomcat/tomcat-9/',
+          directoryPattern: '^v(9\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+        { name: 'aliyun', label: '阿里云', listing: 'https://mirrors.aliyun.com/apache/tomcat/tomcat-9/',
+          directoryPattern: '^v(9\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+      ] } } },
 
   { id: 'tomcat11', name: 'Apache Tomcat 11', category: 'data',
     probe: { kind: 'pathList', pattern: 'Apache Tomcat Version ([\\d.]+)', paths: [
@@ -397,9 +412,14 @@ export const CATALOG = [
       '%DSH_DEV_ENV_ROOTS%\\Tomcat11\\RELEASE-NOTES', '%DSH_DEV_ENV_ROOTS%\\Tomcat\\RELEASE-NOTES',
     ] },
     install: { page: 'https://tomcat.apache.org/download-11.cgi',
-      download: { listing: 'https://dlcdn.apache.org/tomcat/tomcat-11/',
-        directoryPattern: '^v(11\\.[\\d.]+)/$',
-        subPath: 'v{version}/bin/apache-tomcat-{version}.zip' } } },
+      download: { sources: [
+        { name: 'apache', label: 'Apache 官方 (dlcdn)', listing: 'https://dlcdn.apache.org/tomcat/tomcat-11/',
+          directoryPattern: '^v(11\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+        { name: 'tuna', label: '清华 TUNA', listing: 'https://mirrors.tuna.tsinghua.edu.cn/apache/tomcat/tomcat-11/',
+          directoryPattern: '^v(11\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+        { name: 'aliyun', label: '阿里云', listing: 'https://mirrors.aliyun.com/apache/tomcat/tomcat-11/',
+          directoryPattern: '^v(11\\.[\\d.]+)/$', subPath: 'v{version}/bin/apache-tomcat-{version}.zip' },
+      ] } } },
 
   { id: 'jenkins', name: 'Jenkins', category: 'data',
     probe: { kind: 'pathList', paths: ['%ProgramFiles%\\Jenkins', '%ProgramData%\\Jenkins',

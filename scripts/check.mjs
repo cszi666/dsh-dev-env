@@ -565,13 +565,24 @@ check('the jmeter download source points at a listing, not a pinned file', () =>
   // A pinned URL carries the version (`…/apache-jmeter-5.6.3.zip`) and rots at the next release,
   // silently: a 404 is indistinguishable from an unreachable network until someone asks.
   assert(JMETER_SOURCE, 'the jmeter entry should declare install.download')
-  assert(typeof JMETER_SOURCE.listing === 'string' && !JMETER_SOURCE.listing.includes('apache-jmeter-'),
-    `expected a directory listing, got ${JMETER_SOURCE.listing}`)
-  assert(!JMETER_SOURCE.direct, 'the current release must not be pinned')
-  assert(typeof JMETER_SOURCE.fileNamePattern === 'string' && JMETER_SOURCE.fileNamePattern,
-    'a listing needs fileNamePattern to pick the archive out of it')
-  new RegExp(JMETER_SOURCE.fileNamePattern) // must compile
-  assert(JMETER_SOURCE.fallback?.listing, 'a listing that only keeps the current release needs a fallback')
+  const sources = Array.isArray(JMETER_SOURCE.sources) ? JMETER_SOURCE.sources : [JMETER_SOURCE]
+  for (const source of sources) {
+    assert(typeof source.listing === 'string' && !source.listing.includes('apache-jmeter-'),
+      `expected a directory listing, got ${source.listing}`)
+    assert(!source.direct, 'the current release must not be pinned')
+    assert(typeof source.fileNamePattern === 'string' && source.fileNamePattern,
+      'a listing needs fileNamePattern to pick the archive out of it')
+    new RegExp(source.fileNamePattern) // must compile
+  }
+  // The default (first) source must carry the fallback: mirrors stand in for each other, but a mirror
+  // cannot stand in for "the official listing has moved".
+  assert(sources[0].fallback?.listing, 'the default source needs a fallback listing')
+  // Named sources are what the picker offers, so the names and labels have to be usable.
+  const names = sources.map((source) => source.name)
+  assert(names.every((name) => typeof name === 'string' && name), `every source needs a name: ${JSON.stringify(names)}`)
+  assert(new Set(names).size === names.length, `source names must be unique: ${JSON.stringify(names)}`)
+  assert(sources.every((source) => typeof source.label === 'string' && source.label),
+    'every source needs a label — the picker shows the label, not the name')
 })
 
 check('compareVersions orders numerically, not as text', () => {
@@ -912,11 +923,22 @@ check('the shipped tomcat entries declare a resolvable download source', () => {
     assert(entry, `${id} should be in the catalog`)
     const download = entry.install?.download
     assert(download, `${id} should declare install.download`)
-    assert(typeof download.listing === 'string' && !/apache-tomcat-[\d.]+\.zip/.test(download.listing),
-      `${id} must point at a listing, not a pinned archive`)
-    assert(download.directoryPattern && download.subPath, `${id} needs directoryPattern and subPath`)
-    assert(download.subPath.includes('{version}'), `${id} subPath must use {version}, not a fixed one`)
-    new RegExp(download.directoryPattern)
+    const sources = Array.isArray(download.sources) ? download.sources : [download]
+    assert(sources.length >= 1, `${id} needs at least one source`)
+    for (const source of sources) {
+      assert(typeof source.listing === 'string' && !/apache-tomcat-[\d.]+\.zip/.test(source.listing),
+        `${id} must point at a listing, not a pinned archive (got ${source.listing})`)
+      assert(source.directoryPattern && source.subPath, `${id} needs directoryPattern and subPath`)
+      assert(source.subPath.includes('{version}'), `${id} subPath must use {version}, not a fixed one`)
+      new RegExp(source.directoryPattern)
+    }
+    // The mirror list is what the picker offers, so each entry has to be nameable and labelable.
+    if (Array.isArray(download.sources)) {
+      assert(download.sources.every((source) => source.name && source.label),
+        `${id} sources need both name and label`)
+      const names = download.sources.map((source) => source.name)
+      assert(new Set(names).size === names.length, `${id} source names must be unique`)
+    }
     assert(!entry.install.winget,
       `${id} must not carry a winget id until one is verified — an unverified one reads as a route`)
   }
