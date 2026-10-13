@@ -9,6 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A project clause can be carried into a conversation, automatically or by hand.** The picker sits at
+  `conversation.input.dock` — directly above the composer, in the row that already holds the todo, goal
+  and queue entries. That slot is a **list** with `replaceRisk: none`, so a new id is added beside them.
+  The blank-session Hero was rejected for this: all three of its seats are `single` and already occupied,
+  so registering there would have replaced shipped UI to make room.
+  - **Manual**: pick any project's clause and it is posted as this conversation's premise.
+  - **Automatic**: `handoff.autoInject` loads this project's clause when a conversation starts. **Off by
+    default**, because it spends tokens every time and a stale premise is worse than none. It is
+    idempotent — one session tries once, so a refresh cannot post it twice — and it is a normal message,
+    so it stays visible and revocable rather than hidden inside the context.
+  - The clause has its own framing: `clausePrompt` presents it as *the project's standing premise* and
+    asks the reader to flag anything stale, which is a different job from `handoffPrompt`'s "this summary
+    replaced the history". Both keep the `<summary>` shape, so neither side needs a second vocabulary.
+  - No tool accepts a path from the caller any more, and a guard checks each tool's parameters block. The
+    project is always derived from the calling session, because a model writing a Windows path into a tool
+    argument is what produced the `MALFORMED_RESPONSE` that discarded a whole turn.
+
+### Added
+
 - **The task list is editable, and DSH can read and change it.** Tasks became structured records
   (`{ id, text, done, tag }`) instead of plain strings, because reordering and deleting both need a
   stable identity: keyed by text, two tasks with the same wording collide, and keyed by index a drag

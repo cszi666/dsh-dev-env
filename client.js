@@ -159,7 +159,16 @@ window.__ModuleLoader__.load({
       clauseRightEmpty: '还没有任务。',
       clauseUntagged: '未分类',
       clauseCount: '项',
-      clauseReorder: '拖动可调顺序',
+      clauseDock: '项目条例',
+      clauseDockHint: '把某个项目的条例作为大前提带进这个对话',
+      clauseDockPick: '带上哪个项目的条例',
+      clauseDockLoading: '正在读取…',
+      clauseDockNone: '还没有任何项目条例。先在「项目条例」页签里写一份。',
+      clauseDockCurrent: '当前项目',
+      clauseDockEmpty: '（还没有摘要）',
+      clauseDockSend: '带进这个对话',
+      clauseSent: '已带入',
+      clauseAutoInjected: '已自动带入本项目的条例',
       taskAdd: '添加',
       taskAddPlaceholder: '新任务，回车添加',
       taskDelete: '删除这条',
@@ -317,7 +326,17 @@ window.__ModuleLoader__.load({
       clauseRightEmpty: 'No tasks yet.',
       clauseUntagged: 'Untagged',
       clauseCount: 'items',
-      clauseReorder: 'drag to reorder',
+      clauseReorder: '拖动可调顺序',
+      clauseDock: 'Project clause',
+      clauseDockHint: 'Bring a project\'s clause into this conversation as its premise',
+      clauseDockPick: 'Which project\'s clause',
+      clauseDockLoading: 'Reading…',
+      clauseDockNone: 'No project has a clause yet. Write one in the Project clause tab first.',
+      clauseDockCurrent: 'this project',
+      clauseDockEmpty: '(no summary yet)',
+      clauseDockSend: 'Bring it in',
+      clauseSent: 'Brought in',
+      clauseAutoInjected: 'This project\'s clause was loaded automatically',
       taskAdd: 'Add',
       taskAddPlaceholder: 'New task, Enter to add',
       taskDelete: 'Delete this one',
@@ -1173,6 +1192,142 @@ window.__ModuleLoader__.load({
         ),
       )
     }
+
+    /**
+     * 输入框上方的项目条例选择器（`conversation.input.dock`）。
+     *
+     * 这个位置是 **list 型、replaceRisk 为 none**，所以加自己的 id 只会**落在现有条目旁边**
+     * （todo / goal / queue），不顶掉任何东西。新对话界面（hero）那三个位置都是**单占**且已被占用，
+     * 注册进去会覆盖 DSH 自带 UI，所以没在那里做。
+     *
+     * 两件事：
+     *   ① **手动传递**：勾选一份条例，把它作为大前提发进当前对话。
+     *   ② **自动带入**：新对话建立时问一次 host 要不要带。开关在设置里，**默认关**（要花 token）。
+     *      刻意做成**幂等**：一个会话只试一次，刷新不会重复投递。
+     */
+    function DevEnvClauseDock(props) {
+      const sessionId = sessionIdFrom(props)
+      const [projects, setProjects] = React.useState(null)
+      const [open, setOpen] = React.useState(false)
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      // 自动带入只做一次：这个组件的每次挂载对应一个会话，重复投递会污染上下文。
+      const seeded = React.useRef(false)
+
+      React.useEffect(() => {
+        if (!sessionId || seeded.current) return
+        seeded.current = true
+        api('/handoff/seed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, lang: currentLang }),
+        })
+          .then((payload) => {
+            if (payload && payload.injected) setNote(t('clauseAutoInjected'))
+          })
+          .catch(() => {
+            /* 自动带入失败不打扰用户：它是可选增强，报错只会在新对话里制造噪音 */
+          })
+      }, [sessionId])
+
+      const load = async () => {
+        if (projects) return
+        try {
+          const payload = await api(`/handoff/projects?sessionId=${encodeURIComponent(sessionId)}`)
+          setProjects(payload.projects || [])
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
+      const send = async (projectKey) => {
+        setBusy(true)
+        setError(null)
+        try {
+          const payload = await api('/handoff/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectKey, sessionId, lang: currentLang }),
+          })
+          setNote(payload.summary || t('clauseSent'))
+          setOpen(false)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      if (!sessionId) return null
+
+      return h(
+        'div',
+        { className: 'dsh-de-dock' },
+        h('style', null, DOCK_CSS),
+        h(
+          'button',
+          {
+            className: 'dsh-de-dockbtn',
+            onClick: () => {
+              setOpen((cur) => !cur)
+              load()
+            },
+            title: t('clauseDockHint'),
+          },
+          `📋 ${t('clauseDock')}`,
+        ),
+        note ? h('span', { className: 'dsh-de-ok' }, note) : null,
+        error ? h('span', { className: 'dsh-de-err' }, error) : null,
+        open
+          ? h(
+              'div',
+              { className: 'dsh-de-dockpanel' },
+              h('div', { className: 'dsh-de-pickq' }, t('clauseDockPick')),
+              projects === null
+                ? h('div', { className: 'dsh-de-msg' }, t('clauseDockLoading'))
+                : projects.length
+                  ? projects.map((project) =>
+                      h(
+                        'div',
+                        {
+                          className: 'dsh-de-source',
+                          key: project.projectKey,
+                          'data-first': project.isCurrent ? '1' : '0',
+                        },
+                        h(
+                          'div',
+                          { className: 'dsh-de-sourcemain' },
+                          h(
+                            'div',
+                            { className: 'dsh-de-sourcename' },
+                            `${project.projectPath || project.projectKey}${project.isCurrent ? ` · ${t('clauseDockCurrent')}` : ''}`,
+                          ),
+                          h(
+                            'div',
+                            { className: 'dsh-de-sourcehost' },
+                            `${project.summary || t('clauseDockEmpty')} · ${project.open} ${t('clauseCount')}`,
+                          ),
+                        ),
+                        h(
+                          'button',
+                          { className: 'dsh-de-btn', disabled: busy, onClick: () => send(project.projectKey) },
+                          t('clauseDockSend'),
+                        ),
+                      ),
+                    )
+                  : h('div', { className: 'dsh-de-msg' }, t('clauseDockNone')),
+            )
+          : null,
+      )
+    }
+
+    const DOCK_CSS = `
+.dsh-de-dock{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 4px;font-size:12px;position:relative}
+.dsh-de-dockbtn{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer}
+.dsh-de-dockbtn:hover{border-color:var(--dsw-alias-brand-primary)}
+.dsh-de-dockpanel{position:absolute;bottom:100%;left:0;margin-bottom:6px;z-index:30;width:min(560px,90vw);max-height:340px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+`
 
     /** 页签自己的样式。面板那份 CSS 是另一个座位的，不该互相依赖。 */
     const HANDOFF_CSS = `
@@ -2450,6 +2605,18 @@ window.__ModuleLoader__.load({
           )
         } catch {
           /* 没有这个槽位（旧版本 DSH）就退化为"改 settings.json"，功能不受影响 */
+        }
+        // 输入框上方的条例选择器。这个槽位是 list 型、replaceRisk 为 none，
+        // 所以加自己的 id 只会落在 todo/goal/queue 旁边，不顶掉任何已有条目。
+        try {
+          ctx.slots.inject('conversation.input.dock', () =>
+            ctx.slots.register(
+              { name: 'conversation.input.dock', id: 'dev-env-clause', order: 30, locale: NS, label: () => t('clauseDock') },
+              DevEnvClauseDock,
+            ),
+          )
+        } catch {
+          /* 旧版本没有这个槽位就退化为"只能在项目条例页签里传递" */
         }
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(

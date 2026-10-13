@@ -40,7 +40,7 @@ import {
   rootsFile,
 } from '../paths.js'
 import { describeProbeHint } from '../roots.js'
-import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, loadRecords, saveRecords, parseSummary, recordFromSummary } from '../handoff.js'
+import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, clausePrompt, loadRecords, saveRecords, parseSummary, recordFromSummary } from '../handoff.js'
 import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView, SETTING_DEFS } from '../settings.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
@@ -1651,6 +1651,66 @@ check('a parsed summary keeps the ids of tasks it already had', () => {
   for (const junk of [null, undefined, {}]) {
     const empty = recordFromSummary(junk, null, __test.projectKeyOf('D:\\x', 's-1'))
     assert(empty && empty.handoff, `${JSON.stringify(junk)} should still produce a record`)
+  }
+})
+
+check('the clause prompt frames the project, not a continuation', () => {
+  // Two prompts exist on purpose. `handoffPrompt` says "history was replaced by this summary", which is
+  // right for continuing one line of work in a new conversation. `clausePrompt` says "this is the
+  // project's standing premise", which is right for carrying it in. Using one for the other's job would
+  // make the model believe every clause is a resumed conversation.
+  const handoff = normaliseHandoff(
+    {
+      summary: '一个插件项目',
+      todo: [{ id: 't1', text: '还没做' }, { id: 't2', text: '做完了', done: true }],
+      doing: [{ id: 't3', text: '正在做' }],
+      done: ['项目级成果'],
+      next: '跑测试',
+      notes: '一个坑',
+    },
+    'p',
+  )
+  const auto = clausePrompt(handoff, 'zh', { automatic: true })
+  const manual = clausePrompt(handoff, 'zh')
+  assert(auto && manual, 'both framings must produce text')
+  assert(auto.includes('自动带入'), 'the automatic framing must say so')
+  assert(manual.includes('用户要求'), 'the manual framing must say the user asked')
+  assert(!auto.includes('历史被这段摘要替换'), 'a clause is not a compaction summary')
+
+  for (const text of [auto, manual]) {
+    assert(text.includes('<summary>'), 'it should use the same block so both sides recognise it')
+    assert(text.includes('大前提'), 'the premise framing is the whole point')
+    assert(text.includes('已经做完'), 'finished work belongs in the premise')
+    assert(text.includes('还需要做'), 'open work belongs in the premise')
+    assert(text.includes('还没做') && text.includes('正在做'), 'open tasks should be listed')
+    assert(!text.includes('做完了'), 'a finished task must not be listed as open work')
+    // It must invite correction, since a clause is only as good as its last save.
+    assert(text.includes('过时'), 'it should ask the reader to flag anything stale')
+  }
+  assert(clausePrompt(emptyHandoff('p'), 'zh') === null, 'an empty clause must produce nothing')
+  assert(clausePrompt(null, 'zh') === null, 'a missing clause must produce nothing')
+})
+
+check('tools never accept a path from the caller, though they may report one', () => {
+  // The escaping failure is the reason. A model writing `D:\\x` in a tool argument ended a whole turn
+  // with MALFORMED_RESPONSE and discarded the writes that shared it, so no tool may *ask* for a Windows
+  // path: the project always comes from the calling session.
+  //
+  // Reporting one is fine and expected — the host computes it and shows it back. So this checks the
+  // parameters block specifically rather than the whole definition, which is the distinction that
+  // matters and the one the first version of this guard got wrong.
+  const source = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  for (const tool of ['dev_env_handoff_write', 'dev_env_tasks']) {
+    const start = source.indexOf(`name: '${tool}'`)
+    assert(start > 0, `${tool} should exist`)
+    const body = source.slice(start, start + 3500)
+    const paramsAt = body.indexOf('parameters:')
+    const paramsEnd = body.indexOf('output:', paramsAt)
+    assert(paramsAt > 0 && paramsEnd > paramsAt, `${tool} should declare parameters before output`)
+    const params = body.slice(paramsAt, paramsEnd)
+    assert(!/projectPath/.test(params), `${tool} must not accept a projectPath parameter`)
+    assert(!/cwd/.test(params), `${tool} must not accept a working directory either`)
+    assert(/exec\.agent/.test(body), `${tool} should take its session from the run context`)
   }
 })
 

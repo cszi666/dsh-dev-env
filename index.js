@@ -19,7 +19,7 @@ import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
-import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText, parseSummary, recordFromSummary } from './handoff.js'
+import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, clausePrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText, parseSummary, recordFromSummary } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
@@ -2221,9 +2221,10 @@ export function apply(ctx, config) {
       })
     })
 
-    // 把**某个项目**的交接投递给一个对话：这就是"到上限后无缝衔接"的执行动作。
-    // 投递的是一份**项目资料**，而不是"某个对话的私产"——所以接手方可以是同一项目的另一个对话
-    // （场景 1），也可以是另一个项目的对话来取用（场景 2、3）。
+    // 把**某个项目**的条例投递给一个对话：手动传递与自动带入都走这里。
+    //
+    // `automatic` 只影响措辞：手动的说"用户要求带上"，自动的说"这个项目被设置为自动带入"。
+    // 两者都是一条**普通消息**，所以用户能看见、能撤销——而不是偷偷塞进上下文。
     register('/dsh-dev-env/api/handoff/send', async (req, res) => {
       if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
       const body = await readJson(req)
@@ -2237,10 +2238,10 @@ export function apply(ctx, config) {
         : await projectForSession(scope || ctx, fromSession)
       const record = byProject[project.key]
       if (!record) {
-        return sendJson(res, 404, { ok: false, error: `这个项目还没有交接内容：${project.key || '(未指定)'}` })
+        return sendJson(res, 404, { ok: false, error: `这个项目还没有项目条例：${project.key || '(未指定)'}` })
       }
-      const text = handoffPrompt(record.handoff, body.lang)
-      if (!text) return sendJson(res, 400, { ok: false, error: '这份交接还是空的，先写点内容再投递' })
+      const text = clausePrompt(record.handoff, body.lang, { automatic: body.automatic === true })
+      if (!text) return sendJson(res, 400, { ok: false, error: '这份条例还是空的，先写点内容再传递' })
       const target = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
       return askDsh({
         req,
@@ -2248,9 +2249,66 @@ export function apply(ctx, config) {
         scope,
         ctx,
         text,
-        requestId: `dev-env-handoff-${randomUUID()}`,
-        summary: `已把交接投给会话`,
+        requestId: `dev-env-clause-${randomUUID()}`,
+        summary: `已把项目条例交给会话`,
         sessionId: target || undefined,
+      })
+    })
+
+    // 输入框上方的手动传递：列出所有有条例的项目，供"带上哪一份"。
+    // 返回索引而不是全文——全文由 send 时再渲染，避免把大段内容推给页面。
+    register('/dsh-dev-env/api/handoff/projects', async (req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const sessionId = url.searchParams.get('sessionId') || ''
+      const { byProject } = loadRecords(handoffsFile())
+      const current = sessionId ? await projectForSession(scope || ctx, sessionId) : null
+      sendJson(res, 200, {
+        ok: true,
+        currentKey: current ? current.key : null,
+        projects: Object.values(byProject)
+          .map((row) => ({
+            projectKey: row.projectKey,
+            projectPath: row.projectPath,
+            scope: row.projectScope,
+            summary: row.handoff.summary,
+            tags: row.tags,
+            open: [...(row.handoff.todo || []), ...(row.handoff.doing || [])].filter((task) => !task.done).length,
+            updatedAt: row.handoff.updatedAt,
+            // 当前对话所在项目的那一份排在最前：多数时候用户要的就是它。
+            isCurrent: current ? row.projectKey === current.key : false,
+          }))
+          .sort((a, b) => (a.isCurrent === b.isCurrent ? (b.updatedAt ?? 0) - (a.updatedAt ?? 0) : a.isCurrent ? -1 : 1)),
+      })
+    })
+
+    // 自动带入：新对话开始时，如果这个项目有条例且开关打开，就把条例作为大前提投进去。
+    //
+    // **默认关闭**（见设置）：它每次都花 token，而过时的前提比没有前提更糟。
+    // 面板在会话刚建立时调它，所以走的是一条**普通消息**——用户看得见，也能撤销。
+    register('/dsh-dev-env/api/handoff/seed', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId' })
+      const settings = loadSettings(settingsFile())
+      if (settings['handoff.autoInject'] !== true) {
+        return sendJson(res, 200, { ok: true, injected: false, reason: '自动带入未开启' })
+      }
+      const { byProject } = loadRecords(handoffsFile())
+      const project = await projectForSession(scope || ctx, sessionId)
+      const record = byProject[project.key]
+      if (!record) return sendJson(res, 200, { ok: true, injected: false, reason: '这个项目还没有条例' })
+      const text = clausePrompt(record.handoff, body.lang, { automatic: true })
+      if (!text) return sendJson(res, 200, { ok: true, injected: false, reason: '条例还是空的' })
+      return askDsh({
+        req,
+        res,
+        scope,
+        ctx,
+        text,
+        requestId: `dev-env-seed-${randomUUID()}`,
+        summary: `已自动带入 ${project.path || project.key} 的项目条例`,
+        sessionId,
       })
     })
 

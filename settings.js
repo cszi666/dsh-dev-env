@@ -46,6 +46,17 @@ export const SETTING_DEFS = [
     },
   },
   {
+    key: 'handoff.autoInject',
+    type: 'boolean',
+    default: false,
+    group: 'handoff',
+    label: { zh: '新对话自动带入项目条例', en: 'Load the project clause into a new conversation' },
+    why: {
+      zh: '打开时，在这个项目里新开一个对话，条例会**自动**作为大前提投进去，你不需要先问一遍。默认关闭：它**每次都会消耗 token**，而且**过时的前提比没有前提更糟**。手动传递（输入框上方的选择器）不受这个开关影响，随时可用。',
+      en: 'When on, starting a conversation in this project automatically posts the clause as its premise, so you never have to ask for it first. Off by default: it spends tokens every time, and **a stale premise is worse than none** — the clause is only as good as your last save. Manual sending (the picker above the composer) is always available regardless of this switch.',
+    },
+  },
+  {
     key: 'handoff.tagOnGenerate',
     type: 'boolean',
     default: false,

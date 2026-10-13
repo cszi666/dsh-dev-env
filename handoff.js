@@ -397,6 +397,48 @@ export function recordFromSummary(parsed, previous, project) {
 }
 
 /**
+ * 把条例渲染成**项目的大前提**，而不是"我在接着另一个对话"。
+ *
+ * 与 handoffPrompt 的区别是框架：那个说"历史被这段摘要替换"，适合跨对话传承；这个说"这是这个项目
+ * 一直在遵守的约定"，适合在一个项目里一直带着。混用会让模型以为每次都是在续接同一个对话。
+ */
+export function clausePrompt(handoff, lang, options = {}) {
+  const english = lang === 'en'
+  if (isHandoffEmpty(handoff)) return null
+  const taskText = (row) => (row && typeof row === 'object' ? row.text : String(row))
+  const taskDone = (row) => Boolean(row && typeof row === 'object' && row.done === true)
+  const open = [...(handoff.doing || []), ...(handoff.todo || [])].filter((row) => !taskDone(row))
+  const blocks = english
+    ? [
+        [`The standing clause for this project is below. Treat it as the project's premise: what it is for, what is already decided, and what is still open.`],
+        handoff.summary ? [`What this project is for:\n${handoff.summary}`] : null,
+        handoff.done && handoff.done.length ? [`Already done:\n${handoff.done.map((row) => `- ${row}`).join('\n')}`] : null,
+        open.length ? [`Still to do:\n${open.map((row) => `- ${taskText(row)}`).join('\n')}`] : null,
+        handoff.next ? [`Next step:\n${handoff.next}`] : null,
+        handoff.notes ? [`Lessons and traps:\n${handoff.notes}`] : null,
+        [`Work from this premise rather than re-deriving it. If something here looks out of date, say so instead of following it blindly.`],
+      ]
+    : [
+        [`下面是这个项目一直在遵守的条例。请把它当作**这个项目的大前提**：它是做什么的、已经定了什么、还有什么没定。`],
+        handoff.summary ? [`这个项目要做什么：\n${handoff.summary}`] : null,
+        handoff.done && handoff.done.length ? [`已经做完：\n${handoff.done.map((row) => `- ${row}`).join('\n')}`] : null,
+        open.length ? [`还需要做：\n${open.map((row) => `- ${taskText(row)}`).join('\n')}`] : null,
+        handoff.next ? [`下一步：\n${handoff.next}`] : null,
+        handoff.notes ? [`经验与坑：\n${handoff.notes}`] : null,
+        [`请基于这个大前提往下做，不要再重新推导一遍。如果发现其中有**过时**的地方，直接指出，而不是照着做。`],
+      ]
+  const body = blocks.filter(Boolean).map((block) => block.join('\n')).join('\n\n')
+  const header = options.automatic
+    ? english
+      ? 'This conversation started in a project that keeps a clause, and the project is set to load it automatically.'
+      : '这个对话开在一个有项目条例的项目里，而该项目被设置为自动带入条例。'
+    : english
+      ? 'The user asked for this project\'s clause.'
+      : '用户要求带上这个项目的条例。'
+  return [header, '', '<summary>', body, '</summary>'].join('\n')
+}
+
+/**
  * 把一份交接渲染成"喂给另一个对话的开场"。
  *
  * 和交接给对话（jobHandoffPrompt）的区别：那条说的是"插件任务正在发生什么"，这条说的是
