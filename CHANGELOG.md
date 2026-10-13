@@ -9,6 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The 交接 tab is now 项目条例 (project clause), laid out as two columns.** The rename follows from what
+  the record actually is: it belongs to the project and states what that project is about, so calling it
+  a handover described only one of its three uses. The layout now separates the two questions it answers:
+  the **left column is 需要提交的事** (the goal and constraints, what is already done, the lessons and
+  traps, the next step) and the **right column is 任务清单**, the work still to do, **grouped by tag**.
+  That distinction is not decoration — the left column is what is or will be handed over, the right is
+  what remains — and grouping the right column by tag is what makes the tag list useful rather than
+  cosmetic. On a narrow viewport the columns stack, because long text in a half-width column is hard to
+  read.
+  - The tab's explanatory line is now its own string rather than the task-list panel's, which was about
+    handing a job list to a conversation and read as nonsense here. The unused key was deleted rather
+    than left behind as dead copy.
+- **A failed save carries its reason.** `saveRecords` returned a boolean, so "no storage path" and "the
+  path could not be created" produced the same vague message — which is what sent the earlier
+  investigation toward the environment variables while the path had in fact resolved correctly. It now
+  returns `{ ok, error }`, and the reason names the path and the underlying cause.
+
+### Changed
+
 - **A handover record is keyed by project, not by conversation.** Keeping it per session was wrong for
   the way it is actually used: two of the three intended cases are cross-project — a branch needing the
   parent project's material, another project wanting its lessons — and a note private to one conversation

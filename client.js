@@ -120,7 +120,6 @@ window.__ModuleLoader__.load({
       tryInstead: '改用另一条路',
       tryInsteadWhy: 'winget 在不同的环境里适配度差别很大（没有 Store、源被策略禁用、需要管理员权限）。这条命令失败了，但这个条目有一条不依赖它的路。',
       handoff: '交接给对话',
-      handoffHint: '把上面这份任务列表的现状交给一个对话，让它接着看',
       handoffPick: '交给哪个对话',
       handoffPickHint: '列表按最近活跃排序。只有能接收提问的会话才可选。',
       handoffAuto: '交给当前对话',
@@ -141,18 +140,31 @@ window.__ModuleLoader__.load({
       handoffLoading: '正在读取会话…',
       handoffNoSessions: '没有可用的会话',
       handoffRunning: '运行中',
-      handoffTab: '交接',
-      handoffSummary: '当前在做什么',
-      handoffTodo: '还需要做（一行一件）',
-      handoffDoing: '正在做',
-      handoffDone: '已经做完',
-      handoffNext: '下一步计划',
-      handoffNotes: '备注（关键决定、踩过的坑）',
+      handoffTab: '项目条例',
+      handoffSummary: '这个项目要做什么（目标与约束）',
+      handoffTodo: '待办事项（一行一件）',
+      handoffDoing: '正在进行',
+      handoffDone: '已完成',
+      handoffNext: '下一步',
+      handoffNotes: '经验与坑（决策理由、试过不行的方法）',
       handoffOnePerLine: '一行一件',
-      handoffSave: '保存交接',
+      handoffSave: '保存条例',
       handoffSaved: '已保存',
       handoffSendCurrent: '投给当前对话，从这里接着做',
-      handoffNoSession: '暂时拿不到这个对话的身份，所以无法读写它的交接。',
+      handoffNoSession: '暂时拿不到这个对话的身份，所以无法读写项目条例。',
+      clauseLeft: '需要提交的事',
+      clauseRight: '任务清单',
+      clauseLeftEmpty: '还没有登记需要提交的内容。',
+      clauseRightEmpty: '还没有任务。',
+      clauseUntagged: '未分类',
+      clauseCount: '项',
+      clauseByTag: '按标签分组',
+      clauseHint: '这是这个项目的条例：左边是已经/将要交出去的东西，右边是还要做的事。同一项目的任何对话看到的是同一份。',
+      tagContinuation: '传承：接着往下做',
+      tagProjectMaterial: '项目资料：需求/功能/接口',
+      tagReusable: '可复用经验：做法与坑',
+      tagDecision: '决策记录：为什么这么选',
+      tagOpen: '仍待确认：未定的事',
       settingsTitle: 'Dev Env 设置',
       settingsIntro: '这些是默认行为。每一项都写明它会改变什么；改动保存后立即生效，不需要重启。',
       settingsSave: '保存设置',
@@ -258,7 +270,6 @@ window.__ModuleLoader__.load({
       tryInstead: 'Take the other route',
       tryInsteadWhy: 'winget adapts very differently across environments (no Store, sources disabled by policy, needs admin). This command failed, but the entry has a route that does not depend on it.',
       handoff: 'Hand to a conversation',
-      handoffHint: 'Give this task list, as it stands, to a conversation so it can pick up from here',
       handoffPick: 'Which conversation',
       handoffPickHint: 'Ordered by recent activity. Only sessions that can accept a prompt are listed.',
       handoffAuto: 'Hand to the current conversation',
@@ -279,18 +290,31 @@ window.__ModuleLoader__.load({
       handoffLoading: 'Reading sessions…',
       handoffNoSessions: 'No conversation is available',
       handoffRunning: 'running',
-      handoffTab: 'Handover',
-      handoffSummary: 'What this is about',
-      handoffTodo: 'Still to do (one per line)',
+      handoffTab: 'Project clause',
+      handoffSummary: 'What this project is for (goal and constraints)',
+      handoffTodo: 'To do (one per line)',
       handoffDoing: 'In progress',
-      handoffDone: 'Already done',
+      handoffDone: 'Done',
       handoffNext: 'Next step',
-      handoffNotes: 'Notes (decisions, traps)',
+      handoffNotes: 'Lessons and traps (why a decision, what did not work)',
       handoffOnePerLine: 'one per line',
-      handoffSave: 'Save handover',
+      handoffSave: 'Save clause',
       handoffSaved: 'Saved',
       handoffSendCurrent: 'Send to the current conversation and continue from here',
-      handoffNoSession: 'This conversation has no identity available right now, so its handover cannot be read or written.',
+      handoffNoSession: 'This conversation has no identity available right now, so the project clause cannot be read or written.',
+      clauseLeft: 'To be submitted',
+      clauseRight: 'Task list',
+      clauseLeftEmpty: 'Nothing registered for submission yet.',
+      clauseRightEmpty: 'No tasks yet.',
+      clauseUntagged: 'Untagged',
+      clauseCount: 'items',
+      clauseByTag: 'grouped by tag',
+      clauseHint: 'The clause for this project: the left column is what is or will be handed over, the right is what is still to do. Every conversation in this project sees the same one.',
+      tagContinuation: 'Continuation: keep going from here',
+      tagProjectMaterial: 'Project material: requirements, features, interfaces',
+      tagReusable: 'Reusable: approaches and traps',
+      tagDecision: 'Decisions: why this choice',
+      tagOpen: 'Still open: undecided points',
       settingsTitle: 'Dev Env settings',
       settingsIntro: 'These are defaults. Each one says what it changes; saving takes effect immediately, with no restart.',
       settingsSave: 'Save settings',
@@ -810,7 +834,9 @@ window.__ModuleLoader__.load({
               record.tags.map((tag) => h('span', { className: 'dsh-de-chip ok', key: tag }, tag)),
             )
           : null,
-        h('div', { className: 'dsh-de-pickq' }, t('handoffHint')),
+        h('div', { className: 'dsh-de-pickq' }, t('clauseHint')),
+        // 两栏：左「需要提交的事」、右「任务清单（按标签分组）」。
+        h(ClauseColumns, { handoff, tags: record.tags }),
         // 显示这份记录属于哪个项目。用户必须知道自己在改哪个箱子——这正是"末影箱"与"私人笔记"
         // 的区别，藏起来会让人以为它是这个对话的私产。
         h(
@@ -868,7 +894,7 @@ window.__ModuleLoader__.load({
                             : current.picked.filter((row) => row !== choice.key),
                         })),
                     }),
-                    h('span', null, `${currentLang === 'en' ? choice.en : choice.zh}  ·  ${choice.key}`),
+                    h('span', null, `${choice.label()}  ·  ${choice.key}`),
                   ),
                 ),
                 h(
@@ -885,12 +911,90 @@ window.__ModuleLoader__.load({
 
     /** 用途标签的候选。**只在这里定义一次**，界面与文档都取它，免得两处清单漂移。 */
     const TAG_CHOICES = [
-      { key: 'continuation', zh: '传承：接着往下做', en: 'Continuation: keep going from here' },
-      { key: 'project-material', zh: '项目资料：需求/功能/接口', en: 'Project material: requirements, features, interfaces' },
-      { key: 'reusable', zh: '可复用经验：做法与坑', en: 'Reusable: approaches and traps' },
-      { key: 'decision', zh: '决策记录：为什么这么选', en: 'Decisions: why this choice' },
-      { key: 'handover-open', zh: '仍待确认：未定的事', en: 'Still open: undecided points' },
+      { key: 'continuation', label: () => t('tagContinuation') },
+      { key: 'project-material', label: () => t('tagProjectMaterial') },
+      { key: 'reusable', label: () => t('tagReusable') },
+      { key: 'decision', label: () => t('tagDecision') },
+      { key: 'handover-open', label: () => t('tagOpen') },
     ]
+
+    /**
+     * 条例的两栏。
+     *
+     * **左栏「需要提交的事」**＝这个项目对外要交出去的东西：目标与约束、已完成（产出物）、经验与坑、
+     * 下一步。**右栏「任务清单」**＝待办与进行中，**按标签分组**（未打标签的归到「未分类」），
+     * 因为标签就是"这件事属于哪一类工作"的分组依据。
+     *
+     * 两栏的区别不是装饰：左栏是"已经/将要交出去什么"，右栏是"还要做什么"。
+     */
+    function ClauseColumns({ handoff, tags }) {
+      const grouped = new Map()
+      for (const choice of TAG_CHOICES) grouped.set(choice.key, [])
+      grouped.set('__untagged__', [])
+      // 待办与进行中都算"要做的事"，一起进右栏；只有打不上已知标签的才落到未分类。
+      const rows = [
+        ...(handoff.doing || []).map((text) => ({ text, tag: 'continuation' })),
+        ...(handoff.todo || []).map((text) => ({ text, tag: null })),
+      ]
+      for (const row of rows) {
+        // 条例层面的标签决定"这个项目在做哪类工作"；任务行沿用整份记录的标签分组，
+        // 所以每条待办都能被归到某一类，而不是散着堆在一起。
+        const key = (tags || []).find((tag) => grouped.has(tag)) || '__untagged__'
+        grouped.get(key).push(row)
+      }
+
+      const list = (rows) => rows.map((row) => h('li', { key: row.text }, row.text))
+      const leftBlock = (title, text) => (text ? h('div', { className: 'dsh-de-cl-block' }, h('h4', null, title), h('div', { className: 'dsh-de-cl-body' }, text)) : null)
+
+      return h(
+        'div',
+        { className: 'dsh-de-clause' },
+        // 左栏：需要提交的事
+        h(
+          'div',
+          { className: 'dsh-de-cl-col' },
+          h('h3', { className: 'dsh-de-cl-title' }, t('clauseLeft')),
+          leftBlock(t('handoffSummary'), handoff.summary),
+          (handoff.done || []).length
+            ? h('div', { className: 'dsh-de-cl-block' }, h('h4', null, t('handoffDone')), h('ul', { className: 'dsh-de-cl-list' }, list((handoff.done || []).map((text) => ({ text })))))
+            : null,
+          leftBlock(t('handoffNotes'), handoff.notes),
+          leftBlock(t('handoffNext'), handoff.next),
+          !handoff.summary && !handoff.notes && !handoff.next && !(handoff.done || []).length
+            ? h('div', { className: 'dsh-de-msg' }, t('clauseLeftEmpty'))
+            : null,
+        ),
+        // 右栏：任务清单，按标签分组
+        h(
+          'div',
+          { className: 'dsh-de-cl-col' },
+          h(
+            'h3',
+            { className: 'dsh-de-cl-title' },
+            `${t('clauseRight')} · ${rows.length} ${t('clauseCount')}`,
+            h('span', { className: 'dsh-de-cl-sub' }, t('clauseByTag')),
+          ),
+          rows.length
+            ? [...grouped.entries()]
+                .filter(([, items]) => items.length)
+                .map(([key, items]) => {
+                  const choice = TAG_CHOICES.find((row) => row.key === key)
+                  return h(
+                    'div',
+                    { className: 'dsh-de-cl-group', key },
+                    h(
+                      'div',
+                      { className: 'dsh-de-cl-grouptitle' },
+                      choice ? choice.label() : t('clauseUntagged'),
+                      h('span', { className: 'dsh-de-cl-count' }, String(items.length)),
+                    ),
+                    h('ul', { className: 'dsh-de-cl-list' }, list(items)),
+                  )
+                })
+            : h('div', { className: 'dsh-de-msg' }, t('clauseRightEmpty')),
+        ),
+      )
+    }
 
     /** 页签自己的样式。面板那份 CSS 是另一个座位的，不该互相依赖。 */
     const HANDOFF_CSS = `
@@ -900,6 +1004,20 @@ window.__ModuleLoader__.load({
 .dsh-de-hf{margin-top:10px}
 .dsh-de-hflabel{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
 .dsh-de-hflist{width:100%;box-sizing:border-box;resize:vertical;font:inherit;font-size:12px;line-height:1.5;padding:6px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+/* 两栏条例。窄的时候换行成上下，因为半栏宽度的长文本读起来很糟。 */
+.dsh-de-clause{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+@media (max-width:720px){.dsh-de-clause{grid-template-columns:1fr}}
+.dsh-de-cl-col{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1);min-width:0}
+.dsh-de-cl-title{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);display:flex;align-items:center;gap:6px}
+.dsh-de-cl-sub{font-weight:400;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-cl-block{margin-bottom:10px}
+.dsh-de-cl-block h4{margin:0 0 3px;font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.dsh-de-cl-body{font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.dsh-de-cl-group{margin-bottom:10px}
+.dsh-de-cl-grouptitle{font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.dsh-de-cl-count{font-weight:400;opacity:.7}
+.dsh-de-cl-list{margin:0;padding-left:18px;font-size:12px;line-height:1.6}
+.dsh-de-cl-list li{margin-bottom:2px;word-break:break-word}
 `
 
     // ------------------------------------------------------------ settings page

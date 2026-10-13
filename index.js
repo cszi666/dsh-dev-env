@@ -1085,6 +1085,29 @@ async function probeAutoFill(ctx, sessionId) {
     report.detail.push('agents 服务不可用或没有 get()')
   }
 
+  // D：能否用**子智能体**总结（不占用主对话的上下文）。
+  //
+  // 关键不是"有没有 provider"，而是 provider 的 `inheritsParentContext`——子智能体是否带着父对话的
+  // 历史开始。**只有继承上下文的 provider 才能做这件事**：不继承的子智能体看不到这段对话，
+  // 让它写交接只会编出一个空壳。所以这里如实报告每个 provider 的能力，而不是假定。
+  report.subagentProviders = []
+  const subagents = getService(ctx, 'subagents')
+  if (subagents && typeof subagents.list === 'function' && typeof subagents.getProvider === 'function') {
+    try {
+      for (const name of subagents.list()) {
+        const provider = subagents.getProvider(name)
+        report.subagentProviders.push({
+          name,
+          inheritsParentContext: provider ? provider.inheritsParentContext === true : false,
+          agentOptions: provider && provider.capabilities ? provider.capabilities.agentOptions === true : false,
+        })
+      }
+    } catch (error) {
+      report.detail.push(`枚举子智能体 provider 失败：${String((error && error.message) || error).slice(0, 60)}`)
+    }
+  }
+  report.canSubagentFill = report.subagentProviders.some((row) => row.inheritsParentContext)
+
   // A 始终可用（只要会话服务在），因为它只是把一段文本作为提问投进对话。
   report.canAutoFill = report.sessions
   return report
