@@ -74,12 +74,63 @@ function clamp(text, max) {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value
 }
 
+/**
+ * 单条任务文本的上限。导出给宿主用——**不在 index.js 里再写一份**：
+ * 两处上限一旦不同步，面板存进去的文字会被工具截断，而用户看到的是自己写的内容变了。
+ */
+export function clampText(text) {
+  return clamp(text, LIMITS.item)
+}
+
 function clampList(list) {
   if (!Array.isArray(list)) return []
   return list
     .map((row) => (typeof row === 'string' ? clamp(row, LIMITS.item) : ''))
     .filter(Boolean)
     .slice(0, LIMITS.items)
+}
+
+/**
+ * 一条任务：**结构化的对象**，不是字符串。
+ *
+ * 为什么必须带 id：拖动排序与删除都要有稳定身份。若按文本或下标标识，一旦两条任务文字相同、
+ * 或拖动后下标变化，操作就会落到错误的那一条上——而用户看不出来。
+ */
+export function normaliseTask(input, index) {
+  const source = typeof input === 'string' ? { text: input } : input && typeof input === 'object' ? input : {}
+  const text = clamp(source.text, LIMITS.item)
+  if (!text) return null
+  return {
+    id: typeof source.id === 'string' && source.id.trim() ? source.id.trim().slice(0, 64) : `t${index + 1}`,
+    text,
+    // `done` 是任务自己的状态，和"哪一栏"无关：右栏显示未完成，左栏"已完成"是项目级的成果记录。
+    done: source.done === true,
+    // 每个任务可以带一个标签，右栏据此分组；没打标签的归到「未分类」。
+    tag: typeof source.tag === 'string' && source.tag.trim() ? source.tag.trim().slice(0, 40) : null,
+  }
+}
+
+/**
+ * 归一化任务列表，并**兼容两种历史形态**：
+ *   - 旧：`['一件事', '另一件']`（字符串数组）
+ *   - 新：`[{ id, text, done, tag }]`
+ * 旧形态必须继续能读——用户已有记录里就是字符串，丢掉它们等于破坏"原有功能可复现"的承诺。
+ * 旧字符串会得到生成出来的 id，并在下一次保存时自然升级。
+ */
+export function normaliseTasks(input) {
+  if (!Array.isArray(input)) return []
+  const tasks = []
+  for (const row of input) {
+    const task = normaliseTask(row, tasks.length)
+    if (task) tasks.push(task)
+  }
+  // id 去重：生成出来的 id 可能与显式传入的撞车，撞了会让拖动操作落到错的那条上。
+  const seen = new Set()
+  for (let i = 0; i < tasks.length; i += 1) {
+    while (seen.has(tasks[i].id)) tasks[i].id = `${tasks[i].id}-${i + 1}`
+    seen.add(tasks[i].id)
+  }
+  return tasks.slice(0, LIMITS.items)
 }
 
 /**
@@ -120,8 +171,11 @@ export function normaliseHandoff(input, sessionId) {
     // 一句话说明这个对话在干什么——接手者第一眼要看到的东西。
     summary: clamp(source.summary, LIMITS.summary),
     // "还剩什么没做"与"下一步计划"是这份东西的核心，也正是用户点名的两项。
-    todo: clampList(source.todo),
-    doing: clampList(source.doing),
+    //
+    // `todo` 与 `doing` 现在是**结构化任务**（带 id，支持拖动排序与删除）；`done` 保持字符串数组，
+    // 因为它是项目级的**成果记录**，不参与勾选与排序，升级它只会增加迁移面而没有收益。
+    todo: normaliseTasks(source.todo),
+    doing: normaliseTasks(source.doing),
     done: clampList(source.done),
     next: clamp(source.next, LIMITS.summary),
     notes: clamp(source.notes, LIMITS.notes),
@@ -243,14 +297,25 @@ export function handoffPrompt(handoff, lang) {
   // 格式两侧都认得，内容各写各的语言。
   // 五节照 DSH 原文的节名与顺序。缺的节宁可**留标题不写内容**，也不省略标题：DSH 的压缩摘要
   // 总是五节齐全，节名缺失会让"这份东西是压缩摘要"这个信号变弱，而信号正是复用它格式的理由。
+  // 任务现在是对象：这里把文字取出来。**已勾选的不再进"下一步"**——它们已经完成了，
+  // 混在里面会让接手者以为还要做。
+  const taskText = (row) => (row && typeof row === 'object' ? row.text : String(row))
+  const taskDone = (row) => Boolean(row && typeof row === 'object' && row.done === true)
   const nextSteps = [
-    ...handoff.doing.map((row) => `- in progress: ${row}`),
-    ...handoff.todo.map((row) => `- ${row}`),
+    ...handoff.doing.filter((row) => !taskDone(row)).map((row) => `- in progress: ${taskText(row)}`),
+    ...handoff.todo.filter((row) => !taskDone(row)).map((row) => `- ${taskText(row)}`),
     ...(handoff.next ? [`- next: ${handoff.next}`] : []),
   ]
+  // 已勾选的任务单独列出来：它们也是"已经做完"的一部分，不该凭空消失。
+  const finishedTasks = [...handoff.todo, ...handoff.doing].filter(taskDone).map((row) => `- ${taskText(row)}`)
   const sections = [
     ['1. Task Overview', handoff.summary ? [handoff.summary] : ['(not recorded)']],
-    ['2. Current State', handoff.done.length ? handoff.done.map((row) => `- ${row}`) : ['(not recorded)']],
+    [
+      '2. Current State',
+      [...handoff.done.map((row) => `- ${row}`), ...finishedTasks].length
+        ? [...handoff.done.map((row) => `- ${row}`), ...finishedTasks]
+        : ['(not recorded)'],
+    ],
     ['3. Important Discoveries', handoff.notes ? [handoff.notes] : ['(not recorded)']],
     ['4. Next Steps', nextSteps.length ? nextSteps : ['(not recorded)']],
     ['5. Context to Preserve', [`Recorded in a dsh-dev-env handover${handoff.sessionId ? `: ${handoff.sessionId}` : ''}`]],

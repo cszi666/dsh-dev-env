@@ -1426,7 +1426,12 @@ check('records round-trip, and a file in the pre-existing session format still l
     const old = migrated.byProject['session:s-old']
     assert(old, 'the old record should be reachable under a session key')
     assert(old.handoff.summary === '旧格式的记录', 'its content must not be lost')
-    assert(old.handoff.todo[0] === '旧待办', 'its lists must not be lost')
+    // The content must survive the shape change, not the shape itself: a migrated string task becomes
+    // an object with an id, and asserting on the old string form would be asserting on the layout rather
+    // than on what the user would lose.
+    assert(old.handoff.todo.length === 1, 'its task count must not be lost')
+    assert(old.handoff.todo[0].text === '旧待办', `its task text must not be lost, got ${JSON.stringify(old.handoff.todo[0])}`)
+    assert(typeof old.handoff.todo[0].id === 'string' && old.handoff.todo[0].id, 'a migrated task needs an id to be editable')
     assert(old.projectScope === 'session', 'its degraded scope should be recorded, not hidden')
 
     writeFileSync(file, 'not json at all', 'utf8')
@@ -1508,6 +1513,62 @@ check('an over-escaped Windows path maps to the same project', () => {
   assert(__test.projectKeyOf('D:/work/alpha', 's-1').key === plain.key, 'forward slashes are the same project')
   assert(__test.deEscapePath('C:\\Program Files\\x') === 'C:\\Program Files\\x', 'a normal path is untouched')
   assert(__test.deEscapePath('  D:\\x  ') === 'D:\\x', 'surrounding space is trimmed')
+})
+
+check('tasks are structured, migrate from plain strings, and always keep unique ids', () => {
+  // The list has to be reorderable and deletable, and both need a stable identity: keyed by text, two
+  // tasks with the same wording collide; keyed by index, a drag invalidates every key. The ids are also
+  // what the dev_env_tasks tool hands back to the model.
+  const fromStrings = __test.normaliseTasks(['第一件', '第二件'])
+  assert(fromStrings.length === 2, 'plain strings must still be accepted')
+  assert(fromStrings[0].text === '第一件', 'the text must survive')
+  assert(fromStrings.every((row) => typeof row.id === 'string' && row.id), 'every migrated task needs an id')
+  assert(new Set(fromStrings.map((row) => row.id)).size === 2, 'the generated ids must be distinct')
+  assert(fromStrings.every((row) => row.done === false), 'a migrated task starts unfinished')
+
+  // A duplicate id in the input must be repaired, or a move or delete lands on the wrong task — which
+  // the user cannot see, because both rows look identical.
+  const dupes = __test.normaliseTasks([{ id: 'x', text: 'a' }, { id: 'x', text: 'b' }])
+  assert(new Set(dupes.map((row) => row.id)).size === 2, `ids must be made unique, got ${JSON.stringify(dupes.map((r) => r.id))}`)
+
+  // Junk must not throw and must not produce phantom rows.
+  for (const junk of [null, undefined, 42, 'text', {}, [null], [{ text: '   ' }]]) {
+    const rows = __test.normaliseTasks(junk)
+    assert(Array.isArray(rows), `${JSON.stringify(junk)} should normalise to an array`)
+    assert(rows.every((row) => row.text), `${JSON.stringify(junk)} must not produce an empty task`)
+  }
+
+  // A task carries its own tag, which is what groups the right-hand column.
+  const tagged = __test.normaliseTasks([{ text: 'a', tag: 'reusable' }])
+  assert(tagged[0].tag === 'reusable', 'a tag should survive')
+  assert(__test.normaliseTasks([{ text: 'a', tag: '  ' }])[0].tag === null, 'a blank tag means none')
+
+  // The single-task normaliser is what the tool uses for `add`.
+  assert(__test.normaliseTask('单件', 0).text === '单件', 'a bare string is one task')
+  assert(__test.normaliseTask('', 0) === null, 'an empty task is rejected rather than stored')
+  assert(__test.clampText('x'.repeat(5000)).length <= 300, 'task text is bounded')
+})
+
+check('a finished task moves to Current State instead of staying in Next Steps', () => {
+  // A checked task left in the next-steps list would tell whoever picks this up to do work that is
+  // already done — the exact failure a handover exists to prevent, in miniature.
+  const handoff = normaliseHandoff(
+    {
+      summary: '在做条例',
+      todo: [{ id: 't1', text: '还没做' }, { id: 't2', text: '已经做完', done: true }],
+      doing: [{ id: 't3', text: '正在做' }],
+      done: ['项目级成果'],
+    },
+    's-1',
+  )
+  const text = handoffPrompt(handoff, 'zh')
+  const nextSteps = text.slice(text.indexOf('4. Next Steps'), text.indexOf('5. Context to Preserve'))
+  const currentState = text.slice(text.indexOf('2. Current State'), text.indexOf('3. Important Discoveries'))
+  assert(nextSteps.includes('还没做'), 'an unfinished task belongs in next steps')
+  assert(nextSteps.includes('正在做'), 'an in-progress task belongs in next steps')
+  assert(!nextSteps.includes('已经做完'), 'a finished task must not sit in next steps')
+  assert(currentState.includes('已经做完'), 'a finished task belongs in current state')
+  assert(currentState.includes('项目级成果'), 'the project-level results still belong in current state')
 })
 
 // ------------------------------------------------------------------ packaging

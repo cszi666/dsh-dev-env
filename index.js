@@ -19,7 +19,7 @@ import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
-import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf, deEscapePath } from './handoff.js'
+import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
@@ -2489,6 +2489,125 @@ export function apply(ctx, config) {
     'dsh-dev-env: tool dev_env_handoff_write',
   )
 
+  /**
+   * 项目条例的**任务清单**的读写工具。
+   *
+   * 存在理由：任务清单是"还要做什么"的唯一事实来源，而 DSH 需要能读到它——否则每开一个新对话，
+   * 它都要重新问你"接下来做什么"。同时让 DSH 能**写入**：干活过程中发现的新事项应当当场记下来，
+   * 而不是等你想起来再手填。
+   *
+   * 项目身份**一律取自这次调用所属会话的工作目录**，不接受调用方传路径——上一版让模型传
+   * Windows 路径，结果反斜杠转义出错导致整轮 `MALFORMED_RESPONSE`，连带同轮其它成功的写入作废。
+   */
+  effect(
+    ctx,
+    () =>
+      ctx.tools.register({
+        name: 'dev_env_tasks',
+        description:
+          '读取或修改当前项目条例里的任务清单。任务有稳定 id，顺序即优先级。用它来：看接下来该做什么（action=list）、把新发现的事项记下来（action=add）、勾掉或改一条（action=update）、调整优先级（action=move）、删掉不要的（action=remove）。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['action'],
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['list', 'add', 'update', 'move', 'remove', 'clear'],
+              description: '要做的操作',
+            },
+            text: { type: 'string', description: 'action=add / update：任务内容' },
+            id: { type: 'string', description: 'action=update / move / remove：任务 id（先用 list 拿到）' },
+            done: { type: 'boolean', description: 'action=update：是否已完成' },
+            tag: { type: 'string', description: 'action=update / add：任务标签，用于右栏分组' },
+            index: { type: 'number', description: 'action=move：目标位置（0 表示排到最前）' },
+            list: {
+              type: 'string',
+              enum: ['todo', 'doing'],
+              description: '操作哪个清单，默认 todo',
+            },
+            doneOnly: { type: 'boolean', description: 'action=clear：只清已完成的' },
+          },
+        },
+        output: {
+          schema: { type: 'object', additionalProperties: true },
+          render: (args, value) => {
+            if (!value || value.ok !== true) {
+              return [{ type: 'text', text: `失败：${(value && value.error) || '未知原因'}` }]
+            }
+            const tasks = value.tasks || []
+            if (!tasks.length) return [{ type: 'text', text: `${value.projectPath || value.projectKey} 的任务清单是空的。` }]
+            const lines = tasks.map((task, i) => `${i + 1}. [${task.done ? 'x' : ' '}] ${task.text}${task.tag ? `  #${task.tag}` : ''}  (${task.id})`)
+            return [
+              {
+                type: 'text',
+                text: `${value.projectPath || value.projectKey} 的任务清单（${tasks.length} 项，顺序即优先级）：\n${lines.join('\n')}`,
+              },
+            ]
+          },
+        },
+        async execute(args, exec) {
+          const input = args && typeof args === 'object' ? args : {}
+          const sessionId = (exec && exec.agent && exec.agent.id) || null
+          const project = await projectForSession(ctx, sessionId)
+          if (project.scope === 'unknown') {
+            return { ok: false, error: '无法确定当前项目（既没有工作目录也没有会话身份），因此无法读写任务清单' }
+          }
+          const file = handoffsFile()
+          const { byProject } = loadRecords(file)
+          const record = byProject[project.key] ?? emptyRecord(project)
+          const listName = input.list === 'doing' ? 'doing' : 'todo'
+          let tasks = normaliseTasks(record.handoff[listName])
+          const action = input.action
+
+          if (action === 'add') {
+            const task = normaliseTask({ text: input.text, tag: input.tag }, tasks.length)
+            if (!task) return { ok: false, error: '任务内容不能为空' }
+            tasks = tasks.concat(task)
+          } else if (action === 'update') {
+            const found = tasks.find((row) => row.id === input.id)
+            if (!found) return { ok: false, error: `找不到任务 ${input.id}（先用 action=list 拿 id）` }
+            if (typeof input.text === 'string' && input.text.trim()) found.text = clampText(input.text)
+            if (typeof input.done === 'boolean') found.done = input.done
+            if (typeof input.tag === 'string') found.tag = input.tag.trim() || null
+          } else if (action === 'move') {
+            const at = tasks.findIndex((row) => row.id === input.id)
+            if (at < 0) return { ok: false, error: `找不到任务 ${input.id}` }
+            const target = Math.max(0, Math.min(tasks.length - 1, Number(input.index) || 0))
+            const [moved] = tasks.splice(at, 1)
+            tasks.splice(target, 0, moved)
+          } else if (action === 'remove') {
+            const before = tasks.length
+            tasks = tasks.filter((row) => row.id !== input.id)
+            if (tasks.length === before) return { ok: false, error: `找不到任务 ${input.id}` }
+          } else if (action === 'clear') {
+            tasks = input.doneOnly === true ? tasks.filter((row) => !row.done) : []
+          } else if (action !== 'list') {
+            return { ok: false, error: `未知的 action：${action}` }
+          }
+
+          if (action !== 'list') {
+            record.handoff[listName] = tasks
+            record.lastSessionId = sessionId
+            byProject[project.key] = record
+            const written = saveRecords(file, byProject)
+            if (!written.ok) return { ok: false, error: written.error }
+          }
+          // 两个清单一起返回：只给一个会让人看不到另一半。
+          return {
+            ok: true,
+            projectKey: project.key,
+            projectPath: project.path,
+            list: listName,
+            tasks,
+            doing: normaliseTasks(record.handoff.doing),
+            todo: normaliseTasks(record.handoff.todo),
+          }
+        },
+      }),
+    'dsh-dev-env: tool dev_env_tasks',
+  )
+
   // 卸载时收掉仍在前台跑的安装进程
   return () => {
     for (const child of state.children) {
@@ -2529,6 +2648,9 @@ export const __test = {
   downloadSourcesOf,
   projectKeyOf,
   deEscapePath,
+  normaliseTask,
+  normaliseTasks,
+  clampText,
   normaliseRecord,
   emptyRecord,
   handoffFillPrompt,

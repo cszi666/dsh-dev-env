@@ -158,7 +158,13 @@ window.__ModuleLoader__.load({
       clauseRightEmpty: '还没有任务。',
       clauseUntagged: '未分类',
       clauseCount: '项',
-      clauseByTag: '按标签分组',
+      clauseReorder: '拖动可调顺序',
+      taskAdd: '添加',
+      taskAddPlaceholder: '新任务，回车添加',
+      taskDelete: '删除这条',
+      taskToggle: '完成 / 取消完成',
+      taskDragHint: '拖动调整顺序（顺序即优先级）',
+      taskEditHint: '点文字可改名',
       clauseHint: '这是这个项目的条例：左边是已经/将要交出去的东西，右边是还要做的事。同一项目的任何对话看到的是同一份。',
       tagContinuation: '传承：接着往下做',
       tagProjectMaterial: '项目资料：需求/功能/接口',
@@ -308,7 +314,13 @@ window.__ModuleLoader__.load({
       clauseRightEmpty: 'No tasks yet.',
       clauseUntagged: 'Untagged',
       clauseCount: 'items',
-      clauseByTag: 'grouped by tag',
+      clauseReorder: 'drag to reorder',
+      taskAdd: 'Add',
+      taskAddPlaceholder: 'New task, Enter to add',
+      taskDelete: 'Delete this one',
+      taskToggle: 'Done / not done',
+      taskDragHint: 'Drag to reorder (order is priority)',
+      taskEditHint: 'Click the text to rename',
       clauseHint: 'The clause for this project: the left column is what is or will be handed over, the right is what is still to do. Every conversation in this project sees the same one.',
       tagContinuation: 'Continuation: keep going from here',
       tagProjectMaterial: 'Project material: requirements, features, interfaces',
@@ -781,6 +793,29 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 任务清单的就地保存（勾选、增删、拖动都走这里）。 */
+      const saveTasks = async (listName, tasks) => {
+        // 用 `record.handoff` 而不是 `handoff`：后者在本组件里声明得更晚（TDZ），
+        // 而这个函数在渲染期间就会被调用。
+        const before = (record && record.handoff) || {}
+        const nextHandoff = Object.assign({}, before, { [listName]: tasks })
+        // 先本地更新，界面立刻响应；请求失败时再回滚成服务端的真值。
+        setRecord((current) => Object.assign({}, current, { handoff: nextHandoff }))
+        try {
+          const payload = await api('/handoff', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, record: Object.assign({}, record, { handoff: nextHandoff }) }),
+          })
+          setProject(payload.project || project)
+          setRecord(payload.record || record)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+          // 回滚：否则界面显示的是没保存成功的内容，而用户以为已经存了。
+          setRecord((current) => Object.assign({}, current, { handoff: before }))
+        }
+      }
+
       const textField = (key, label, rows) =>
         h(
           'div',
@@ -836,7 +871,16 @@ window.__ModuleLoader__.load({
           : null,
         h('div', { className: 'dsh-de-pickq' }, t('clauseHint')),
         // 两栏：左「需要提交的事」、右「任务清单（按标签分组）」。
-        h(ClauseColumns, { handoff, tags: record.tags }),
+        h(ClauseColumns, {
+          handoff,
+          tags: record.tags,
+          // 标签显示名与任务保存都从这里传进去：子组件不该再自己取一次翻译或会话身份。
+          tagOf: (key) => {
+            const choice = TAG_CHOICES.find((row) => row.key === key)
+            return choice ? choice.label() : key
+          },
+          onSaveTasks: saveTasks,
+        }),
         // 显示这份记录属于哪个项目。用户必须知道自己在改哪个箱子——这正是"末影箱"与"私人笔记"
         // 的区别，藏起来会让人以为它是这个对话的私产。
         h(
@@ -909,6 +953,122 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 右栏的任务清单：可勾选、可增删、**可拖动排序**（顺序即优先级）。
+     *
+     * 拖动用原生 HTML5 draggable，而不是引第三方库：这个插件是零依赖的，为一个列表引入一个拖拽库
+     * 不划算。代价是触屏上拖不动，而这是一个桌面应用的侧栏。
+     */
+    function TaskList({ listName, tasks, tagOf, onSave }) {
+      const [dragging, setDragging] = React.useState(null)
+      const [over, setOver] = React.useState(null)
+      const [draft, setDraft] = React.useState('')
+      const [editing, setEditing] = React.useState(null)
+
+      /** 改一项就整份写回：每条一次请求会让连续拖动变成一串请求。 */
+      const commit = (next) => onSave(listName, next)
+
+      const toggle = (id) => commit(tasks.map((row) => (row.id === id ? Object.assign({}, row, { done: !row.done }) : row)))
+      const remove = (id) => commit(tasks.filter((row) => row.id !== id))
+      const rename = (id, text) => commit(tasks.map((row) => (row.id === id ? Object.assign({}, row, { text }) : row)))
+
+      const add = () => {
+        const text = draft.trim()
+        if (!text) return
+        // id 本地生成即可；host 会再归一化一次并保证唯一。
+        commit(tasks.concat({ id: `t${Date.now().toString(36)}`, text, done: false, tag: null }))
+        setDraft('')
+      }
+
+      /** 按 **id** 而不是下标移动：拖动过程中下标会变，按下标会移到错误的位置。 */
+      const move = (fromId, toId) => {
+        if (fromId === toId) return
+        const from = tasks.findIndex((row) => row.id === fromId)
+        const to = tasks.findIndex((row) => row.id === toId)
+        if (from < 0 || to < 0) return
+        const next = tasks.slice()
+        const [moved] = next.splice(from, 1)
+        next.splice(to, 0, moved)
+        commit(next)
+      }
+
+      return h(
+        'div',
+        { className: 'dsh-de-tasks' },
+        tasks.length
+          ? tasks.map((task, index) =>
+              h(
+                'div',
+                {
+                  key: task.id,
+                  className: `dsh-de-task${over === task.id ? ' over' : ''}${dragging === task.id ? ' dragging' : ''}`,
+                  draggable: 'true',
+                  onDragStart: () => setDragging(task.id),
+                  onDragOver: (event) => {
+                    // 必须 preventDefault，否则浏览器不把这里当落点。
+                    if (event && event.preventDefault) event.preventDefault()
+                    setOver(task.id)
+                  },
+                  onDragLeave: () => setOver((cur) => (cur === task.id ? null : cur)),
+                  onDrop: () => {
+                    if (dragging) move(dragging, task.id)
+                    setDragging(null)
+                    setOver(null)
+                  },
+                  onDragEnd: () => {
+                    setDragging(null)
+                    setOver(null)
+                  },
+                },
+                h('span', { className: 'dsh-de-taskgrip', title: t('taskDragHint') }, '⋮⋮'),
+                h('span', { className: 'dsh-de-taskno' }, String(index + 1)),
+                h('input', {
+                  type: 'checkbox',
+                  checked: task.done === true,
+                  onChange: () => toggle(task.id),
+                  title: t('taskToggle'),
+                }),
+                editing === task.id
+                  ? h('input', {
+                      className: 'dsh-de-taskedit',
+                      value: task.text,
+                      onChange: (event) => rename(task.id, event.target.value),
+                      onBlur: () => setEditing(null),
+                      onKeyDown: (event) => {
+                        if (event.key === 'Enter') setEditing(null)
+                      },
+                    })
+                  : h(
+                      'span',
+                      {
+                        className: `dsh-de-tasktext${task.done ? ' done' : ''}`,
+                        onClick: () => setEditing(task.id),
+                        title: t('taskEditHint'),
+                      },
+                      task.text,
+                    ),
+                task.tag ? h('span', { className: 'dsh-de-tasktag' }, tagOf(task.tag)) : null,
+                h('button', { className: 'dsh-de-taskdel', onClick: () => remove(task.id), title: t('taskDelete') }, '×'),
+              ),
+            )
+          : h('div', { className: 'dsh-de-msg' }, t('clauseRightEmpty')),
+        h(
+          'div',
+          { className: 'dsh-de-taskadd' },
+          h('input', {
+            className: 'dsh-de-taskedit',
+            placeholder: t('taskAddPlaceholder'),
+            value: draft,
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') add()
+            },
+          }),
+          h('button', { className: 'dsh-de-btn', onClick: add }, t('taskAdd')),
+        ),
+      )
+    }
+
     /** 用途标签的候选。**只在这里定义一次**，界面与文档都取它，免得两处清单漂移。 */
     const TAG_CHOICES = [
       { key: 'continuation', label: () => t('tagContinuation') },
@@ -927,36 +1087,35 @@ window.__ModuleLoader__.load({
      *
      * 两栏的区别不是装饰：左栏是"已经/将要交出去什么"，右栏是"还要做什么"。
      */
-    function ClauseColumns({ handoff, tags }) {
-      const grouped = new Map()
-      for (const choice of TAG_CHOICES) grouped.set(choice.key, [])
-      grouped.set('__untagged__', [])
-      // 待办与进行中都算"要做的事"，一起进右栏；只有打不上已知标签的才落到未分类。
-      const rows = [
-        ...(handoff.doing || []).map((text) => ({ text, tag: 'continuation' })),
-        ...(handoff.todo || []).map((text) => ({ text, tag: null })),
-      ]
-      for (const row of rows) {
-        // 条例层面的标签决定"这个项目在做哪类工作"；任务行沿用整份记录的标签分组，
-        // 所以每条待办都能被归到某一类，而不是散着堆在一起。
-        const key = (tags || []).find((tag) => grouped.has(tag)) || '__untagged__'
-        grouped.get(key).push(row)
+    function ClauseColumns({ handoff, tags, tagOf, onSaveTasks }) {
+      // 右栏按标签分组，但**每一组内部仍是可拖动的任务清单**；分组只是视觉归类。
+      const byTag = new Map()
+      for (const choice of TAG_CHOICES) byTag.set(choice.key, [])
+      byTag.set('__untagged__', [])
+      for (const row of handoff.todo || []) {
+        const key = tags.find((tag) => byTag.has(tag)) || '__untagged__'
+        byTag.get(key).push(row)
       }
 
-      const list = (rows) => rows.map((row) => h('li', { key: row.text }, row.text))
-      const leftBlock = (title, text) => (text ? h('div', { className: 'dsh-de-cl-block' }, h('h4', null, title), h('div', { className: 'dsh-de-cl-body' }, text)) : null)
+      const leftBlock = (title, text) =>
+        text ? h('div', { className: 'dsh-de-cl-block' }, h('h4', null, title), h('div', { className: 'dsh-de-cl-body' }, text)) : null
+      const allTasks = handoff.todo || []
 
       return h(
         'div',
         { className: 'dsh-de-clause' },
-        // 左栏：需要提交的事
         h(
           'div',
           { className: 'dsh-de-cl-col' },
           h('h3', { className: 'dsh-de-cl-title' }, t('clauseLeft')),
           leftBlock(t('handoffSummary'), handoff.summary),
           (handoff.done || []).length
-            ? h('div', { className: 'dsh-de-cl-block' }, h('h4', null, t('handoffDone')), h('ul', { className: 'dsh-de-cl-list' }, list((handoff.done || []).map((text) => ({ text })))))
+            ? h(
+                'div',
+                { className: 'dsh-de-cl-block' },
+                h('h4', null, t('handoffDone')),
+                h('ul', { className: 'dsh-de-cl-list' }, (handoff.done || []).map((text) => h('li', { key: text }, text))),
+              )
             : null,
           leftBlock(t('handoffNotes'), handoff.notes),
           leftBlock(t('handoffNext'), handoff.next),
@@ -964,34 +1123,37 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'dsh-de-msg' }, t('clauseLeftEmpty'))
             : null,
         ),
-        // 右栏：任务清单，按标签分组
         h(
           'div',
           { className: 'dsh-de-cl-col' },
           h(
             'h3',
             { className: 'dsh-de-cl-title' },
-            `${t('clauseRight')} · ${rows.length} ${t('clauseCount')}`,
-            h('span', { className: 'dsh-de-cl-sub' }, t('clauseByTag')),
+            `${t('clauseRight')} · ${allTasks.length} ${t('clauseCount')}`,
+            h('span', { className: 'dsh-de-cl-sub' }, t('clauseReorder')),
           ),
-          rows.length
-            ? [...grouped.entries()]
-                .filter(([, items]) => items.length)
-                .map(([key, items]) => {
-                  const choice = TAG_CHOICES.find((row) => row.key === key)
-                  return h(
-                    'div',
-                    { className: 'dsh-de-cl-group', key },
-                    h(
+          // 拖动排序要求整份列表在一个容器里，所以按标签分组时**每个分组各带一个清单**，
+          // 组内可拖动——跨组拖动会改变意义（换标签），那是另一件事，不做。
+          allTasks.length
+            ? tags.length
+              ? [...byTag.entries()]
+                  .filter(([, items]) => items.length)
+                  .map(([key, items]) => {
+                    const choice = TAG_CHOICES.find((row) => row.key === key)
+                    return h(
                       'div',
-                      { className: 'dsh-de-cl-grouptitle' },
-                      choice ? choice.label() : t('clauseUntagged'),
-                      h('span', { className: 'dsh-de-cl-count' }, String(items.length)),
-                    ),
-                    h('ul', { className: 'dsh-de-cl-list' }, list(items)),
-                  )
-                })
-            : h('div', { className: 'dsh-de-msg' }, t('clauseRightEmpty')),
+                      { className: 'dsh-de-cl-group', key },
+                      h(
+                        'div',
+                        { className: 'dsh-de-cl-grouptitle' },
+                        choice ? choice.label() : t('clauseUntagged'),
+                        h('span', { className: 'dsh-de-cl-count' }, String(items.length)),
+                      ),
+                      h(TaskList, { listName: 'todo', tasks: items, tagOf, onSave: onSaveTasks, t }),
+                    )
+                  })
+              : h(TaskList, { listName: 'todo', tasks: allTasks, tagOf, onSave: onSaveTasks, t })
+            : h(TaskList, { listName: 'todo', tasks: [], tagOf, onSave: onSaveTasks, t }),
         ),
       )
     }
@@ -1018,6 +1180,21 @@ window.__ModuleLoader__.load({
 .dsh-de-cl-count{font-weight:400;opacity:.7}
 .dsh-de-cl-list{margin:0;padding-left:18px;font-size:12px;line-height:1.6}
 .dsh-de-cl-list li{margin-bottom:2px;word-break:break-word}
+/* 任务行：整行可拖动。抓手给一个可见提示，否则没人知道能拖。 */
+.dsh-de-tasks{display:flex;flex-direction:column;gap:2px}
+.dsh-de-task{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:5px;border:1px solid transparent;font-size:12px;line-height:1.5}
+.dsh-de-task:hover{background:var(--dsw-alias-bg-layer-2)}
+.dsh-de-task.dragging{opacity:.5}
+.dsh-de-task.over{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+.dsh-de-taskgrip{cursor:grab;color:var(--dsw-alias-label-secondary);opacity:.55;flex:none;letter-spacing:-2px}
+.dsh-de-taskno{flex:none;min-width:14px;text-align:right;color:var(--dsw-alias-label-secondary);font-size:11px}
+.dsh-de-tasktext{flex:1;min-width:0;word-break:break-word;cursor:text}
+.dsh-de-tasktext.done{text-decoration:line-through;color:var(--dsw-alias-label-secondary)}
+.dsh-de-tasktag{flex:none;font-size:10px;padding:1px 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-de-taskdel{flex:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:14px;line-height:1;padding:0 3px}
+.dsh-de-taskdel:hover{color:var(--dsw-alias-brand-primary)}
+.dsh-de-taskedit{flex:1;min-width:0;font:inherit;font-size:12px;padding:2px 5px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+.dsh-de-taskadd{display:flex;gap:6px;margin-top:6px}
 `
 
     // ------------------------------------------------------------ settings page

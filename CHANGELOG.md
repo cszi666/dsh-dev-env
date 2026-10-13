@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The task list is editable, and DSH can read and change it.** Tasks became structured records
+  (`{ id, text, done, tag }`) instead of plain strings, because reordering and deleting both need a
+  stable identity: keyed by text, two tasks with the same wording collide, and keyed by index a drag
+  invalidates every key. The right-hand column now supports **drag to reorder** (order is priority),
+  add, delete and a per-task tick, and a renamed task keeps its place and its id. Dragging uses the
+  native HTML5 events rather than a library, since this plugin has no dependencies and a single list is
+  not worth the first one.
+  - **`dev_env_tasks`** is the new agent tool: `list`, `add`, `update`, `move`, `remove`, `clear`. A
+    conversation can ask what is left instead of asking the user again, and can record what it finds
+    while working. The project comes from the calling session, never from an argument.
+  - Old records keep working: a stored `['一件事']` is read as a task with a generated id and upgraded on
+    the next save. Dropping those entries would have broken the promise that this area stays reproducible.
+  - A ticked task moves out of **Next Steps** and into **Current State** in the generated summary, so a
+    finished item no longer tells the next conversation to do it again — the failure the clause exists to
+    prevent, in miniature.
+
 ### Changed
 
 - **The 交接 tab is now 项目条例 (project clause), laid out as two columns.** The rename follows from what
