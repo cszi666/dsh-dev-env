@@ -1493,6 +1493,23 @@ check('a failed save says why, instead of blaming the storage location', () => {
   }
 })
 
+check('an over-escaped Windows path maps to the same project', () => {
+  // A real failure: the model wrote `D:\\x\\y` in the tool arguments, the run ended with
+  // MALFORMED_RESPONSE / "tool input is invalid JSON", and every successful write in that same turn was
+  // discarded with it. A Windows path never contains two consecutive backslashes, so collapsing them is
+  // a fact about the format rather than a guess — and it keeps the record out of a bogus project.
+  const plain = __test.projectKeyOf('D:\\work\\alpha', 's-1')
+  for (const escaped of ['D:\\\\work\\\\alpha', 'D:\\\\\\\\work\\\\\\\\alpha', 'D:\\\\work\\\\alpha\\\\']) {
+    const got = __test.projectKeyOf(escaped, 's-1')
+    assert(got.key === plain.key, `${escaped} → ${got.key}, expected ${plain.key}`)
+  }
+  // The displayed path must be the repaired one, since the UI shows it.
+  assert(__test.projectKeyOf('D:\\\\work\\\\alpha', 's-1').path === 'D:\\work\\alpha', 'the displayed path must be repaired')
+  assert(__test.projectKeyOf('D:/work/alpha', 's-1').key === plain.key, 'forward slashes are the same project')
+  assert(__test.deEscapePath('C:\\Program Files\\x') === 'C:\\Program Files\\x', 'a normal path is untouched')
+  assert(__test.deEscapePath('  D:\\x  ') === 'D:\\x', 'surrounding space is trimmed')
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

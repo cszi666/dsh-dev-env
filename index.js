@@ -19,7 +19,7 @@ import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
-import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf } from './handoff.js'
+import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf, deEscapePath } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
@@ -1126,7 +1126,8 @@ async function projectForSession(ctx, sessionId) {
     try {
       const listed = await sessions.list({}, new AbortController().signal)
       const row = ((listed && listed.items) || []).find((entry) => entry.sessionId === sessionId)
-      if (row) return projectKeyOf(row.cwd, sessionId)
+      // `cwd` 也过一遍还原：它可能来自一个被转义坏掉的来源，而折叠反斜杠是安全的。
+      if (row) return projectKeyOf(deEscapePath(row.cwd ?? ''), sessionId)
     } catch {
       /* 读不到就走下面的退化路径 */
     }
@@ -2430,10 +2431,6 @@ export function apply(ctx, config) {
             doing: { type: 'array', items: { type: 'string' }, description: '4. Next Steps：正在进行中的项' },
             next: { type: 'string', description: '4. Next Steps：紧接着的下一步（一句话）' },
             preserve: { type: 'string', description: '5. Context to Preserve：用户偏好与风格、不明显的领域细节、做过的承诺' },
-            projectPath: {
-              type: 'string',
-              description: '这条交接属于哪个项目目录。省略时按当前会话的工作目录判定。',
-            },
           },
           required: ['summary'],
         },
@@ -2454,10 +2451,12 @@ export function apply(ctx, config) {
           // 后者在由插件发起的那一轮里未必是目标会话，用它会把交接写到**错误的项目**上——
           // 而写错项目的交接会被另一个项目读到。
           const sessionId = (exec && exec.agent && exec.agent.id) || null
-          // 项目身份优先用模型明确给的目录，其次按**当前会话的工作目录**判定。
-          const project = input.projectPath
-            ? projectKeyOf(input.projectPath, sessionId)
-            : await projectForSession(ctx, sessionId)
+          // 项目身份**一律按当前会话的工作目录**判定，不再接受模型传路径。
+          //
+          // 这不是保守，是从一次失败里改的：模型在参数里写 Windows 路径时反斜杠转义出错，
+          // 整轮以 `MALFORMED_RESPONSE / tool input is invalid JSON` 结束，**连带同一轮里其它成功的
+          // 写入一起作废**。而项目身份本来就能从会话确定，让模型填只是白白引入一个转义风险。
+          const project = await projectForSession(ctx, sessionId)
           const file = handoffsFile()
           const { byProject } = loadRecords(file)
           const previous = byProject[project.key]
@@ -2529,6 +2528,7 @@ export const __test = {
   pickDefaultSource,
   downloadSourcesOf,
   projectKeyOf,
+  deEscapePath,
   normaliseRecord,
   emptyRecord,
   handoffFillPrompt,

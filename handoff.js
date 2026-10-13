@@ -24,7 +24,7 @@ import path from 'node:path'
  * 出问题。返回值里带 `scope` 说明是哪种情况，界面可以如实显示。
  */
 export function projectKeyOf(cwd, sessionId) {
-  const raw = typeof cwd === 'string' ? cwd.trim() : ''
+  const raw = typeof cwd === 'string' ? deEscapePath(cwd) : ''
   if (raw) {
     const normalized = raw.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
     if (normalized) return { key: `dir:${normalized}`, scope: 'project', path: raw }
@@ -33,6 +33,20 @@ export function projectKeyOf(cwd, sessionId) {
   return sid
     ? { key: `session:${sid}`, scope: 'session', path: null }
     : { key: 'unknown', scope: 'unknown', path: null }
+}
+
+/**
+ * 把被 JSON 转义坏掉的 Windows 路径还原。
+ *
+ * 起因是一次真实失败：模型在工具参数里把 `D:\x\y` 写成了 `D:\\x\\y`，整轮以
+ * `MALFORMED_RESPONSE / tool input is invalid JSON` 结束——**连带那一轮里其它成功的写入一起作废**。
+ * 真正的 Windows 路径里**不会出现连续两个反斜杠**，所以折叠它是安全的，而不是在猜。
+ */
+export function deEscapePath(value) {
+  let text = String(value).trim()
+  // 反复折叠：转义可能叠了几层（字符串里的 `\\\\` 就是两个反斜杠）。
+  for (let i = 0; i < 4 && text.includes('\\\\'); i += 1) text = text.replace(/\\\\/g, '\\')
+  return text
 }
 
 /** 这条记录属于哪个项目。存盘时写在顶层，读盘时缺失就按旧记录处理。 */
