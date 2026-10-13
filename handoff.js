@@ -190,15 +190,22 @@ export function loadRecords(file) {
   }
 }
 
+/**
+ * 保存记录。返回 `{ ok, error }` 而不是布尔值——**这是从一次真实排查里改的**。
+ *
+ * 原来失败只回 `false`，调用方于是报出"没有可用的存储位置"，而真正的原因是建目录被拒绝。
+ * 两种完全不同的故障共用一句含糊的提示，把排查引向了错误的方向：明明路径解析正常，
+ * 却让人去查环境变量。
+ */
 export function saveRecords(file, byProject) {
+  if (!file) return { ok: false, error: '没有解析出存储位置（DSH_PROFILE_DIR 与 DSH_HOME 都不可用）' }
   try {
-    if (!file) return false
     mkdirSync(path.dirname(file), { recursive: true })
     // 写新结构，同时**留下空的 bySession**，这样更老的版本读到它至少不会崩。
     writeFileSync(file, JSON.stringify({ version: 2, byProject, bySession: {} }, null, 2), 'utf8')
-    return true
-  } catch {
-    return false
+    return { ok: true, error: null }
+  } catch (error) {
+    return { ok: false, error: `写入 ${file} 失败：${String((error && error.message) || error)}` }
   }
 }
 

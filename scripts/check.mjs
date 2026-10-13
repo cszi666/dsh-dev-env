@@ -1404,7 +1404,9 @@ check('records round-trip, and a file in the pre-existing session format still l
     assert(Object.keys(loadRecords(file).byProject).length === 0, 'a missing file means no records')
 
     const record = __test.normaliseRecord({ summary: '迁移前', todo: ['一件事'], tags: ['传承'] }, project)
-    assert(saveRecords(file, { [project.key]: record }), 'saving should work')
+    const saved = saveRecords(file, { [project.key]: record })
+    assert(saved.ok === true, `saving should work, got ${JSON.stringify(saved)}`)
+    assert(saved.error === null, 'a successful save reports no error')
     const back = loadRecords(file).byProject
     assert(back[project.key], 'the record should come back by project key')
     assert(back[project.key].handoff.summary === '迁移前', 'the content should survive the round trip')
@@ -1463,6 +1465,31 @@ check('the fill prompt asks for the tool call, and names DSH\'s five sections', 
     for (const field of ['summary', 'done', 'discoveries', 'todo', 'doing', 'next', 'preserve']) {
       assert(text.includes(field), `${lang} fill prompt should name the ${field} field`)
     }
+  }
+})
+
+check('a failed save says why, instead of blaming the storage location', () => {
+  // This guard exists because of a real debugging detour. When the write was denied, the tool reported
+  // "no usable storage location" — so the search went to the environment variables, while the path had
+  // in fact resolved correctly and only the mkdir had been refused. Two unrelated faults sharing one
+  // vague message is what made that take longer than it should have, so the reason is now carried out.
+  const missing = saveRecords(null, {})
+  assert(missing.ok === false, 'no path is a failure')
+  assert(/没有解析出存储位置/.test(missing.error), `a missing path should say so, got ${missing.error}`)
+
+  // A path that cannot be created: a file used as if it were a directory.
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-savefail-'))
+  try {
+    const blocker = path.join(dir, 'blocker')
+    writeFileSync(blocker, 'not a directory', 'utf8')
+    const denied = saveRecords(path.join(blocker, 'nested', 'records.json'), {})
+    assert(denied.ok === false, 'an impossible path is a failure')
+    assert(denied.error && denied.error.length > 10, 'the failure must carry a reason')
+    assert(/失败/.test(denied.error), `the reason should describe the failure, got ${denied.error}`)
+    // The offending path is part of the reason: without it the reader cannot tell which location was used.
+    assert(denied.error.includes('records.json'), 'the reason should name the path it tried')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

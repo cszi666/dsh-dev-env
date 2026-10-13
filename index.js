@@ -11,7 +11,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
@@ -312,11 +312,68 @@ async function registryIndex(state) {
   return state.registryPromise
 }
 
+/**
+ * 插件的状态目录 —— **必须是能写进去的那个**，而不是"看起来正确的那个"。
+ *
+ * 起因是一次真实失败：`rootsFile()` 把路径算成了 `<profile>/dsh-dev-env/roots.json`，看起来完全正确，
+ * 但那个位置**写不进去**（这台机器上创建该目录会被拒绝），于是 mkdir 抛错、保存返回 false，而调用方
+ * 只看到一句"没有可用的存储位置"——**错误信息把真正的原因藏住了**，害得排查绕了一圈。
+ *
+ * 所以这里不猜：**逐个候选真写一个探针文件**，第一个成功的才是存储位置。候选顺序按语义优先级：
+ *   1. `DSH_DEV_ENV_STATE_DIR` —— 显式覆盖，给测试与特殊部署用
+ *   2. `<rootsFile() 所在目录>` —— 原本的设计位置（profile 下）
+ *   3. `DSH_PROFILE_DIR/dsh-dev-env-state` —— 万一 profile 下那层目录建不出来
+ *   4. 会话工作区 / 当前目录下的 `.dsh-dev-env` —— 受限策略下也可写，且不会被当临时文件清掉
+ *   5. 系统临时目录 —— 最后兜底，宁可状态易失也不要功能完全不可用
+ *
+ * 结果缓存起来（一次探针一个进程），因为每个 HTTP 请求都要用它。
+ */
+let stateDirCache = null
+
+function stateDir() {
+  if (stateDirCache) return stateDirCache
+  const candidates = []
+  const explicit = process.env.DSH_DEV_ENV_STATE_DIR
+  if (explicit && String(explicit).trim()) candidates.push(String(explicit).trim())
+  const primary = rootsFile()
+  if (primary) candidates.push(path.dirname(primary))
+  if (process.env.DSH_PROFILE_DIR) candidates.push(path.join(process.env.DSH_PROFILE_DIR, 'dsh-dev-env-state'))
+  // 会话工作区：在 workspace-write 策略下**一定可写**，而且不会被系统当临时文件清掉。
+  // 放在 profile 之后：profile 才是语义上正确的位置，只有它不可用时才退到这里。
+  if (process.env.DSH_WORKSPACE && String(process.env.DSH_WORKSPACE).trim()) {
+    candidates.push(path.join(String(process.env.DSH_WORKSPACE).trim(), '.dsh-dev-env'))
+  }
+  candidates.push(path.join(process.cwd(), '.dsh-dev-env'))
+  candidates.push(path.join(os.tmpdir(), 'dsh-dev-env-state'))
+
+  for (const dir of candidates) {
+    try {
+      mkdirSync(dir, { recursive: true })
+      const probe = path.join(dir, '.dsh-dev-env-writable')
+      writeFileSync(probe, 'ok', 'utf8')
+      rmSync(probe, { force: true })
+      stateDirCache = dir
+      return dir
+    } catch {
+      /* 换下一个候选；全都失败时下面返回 null */
+    }
+  }
+  stateDirCache = null
+  return null
+}
+
+/** 状态目录里的一个文件。目录不可用时返回 null，调用方据此如实报错。 */
+function stateFile(name) {
+  const dir = stateDir()
+  if (!dir) return null
+  return path.join(dir, name)
+}
+
 // ----------------------------------------------------------------- scanned roots
 
 /** Where the panel remembers the folders the user picked. */
 function rootsPathOf(state) {
-  if (!state.rootsPath) state.rootsPath = rootsFile()
+  if (!state.rootsPath) state.rootsPath = stateFile('roots.json')
   return state.rootsPath
 }
 
@@ -817,31 +874,24 @@ function trimJobs(jobs) {
 
 // ----------------------------------------------------------------- own downloads
 
-/** 我们自己下载/解压的目录：跟着 profile 走，不写进插件自己的目录（那是只读的发布物）。 */
+/** 我们自己下载/解压的目录。跟着**可写的**状态目录走，不写进只读的发布物目录。 */
 function downloadsDir() {
-  const file = rootsFile()
-  if (!file) return path.join(os.tmpdir(), 'dsh-dev-env-downloads')
-  return path.join(path.dirname(file), 'downloads')
+  const dir = stateDir()
+  return dir ? path.join(dir, 'downloads') : path.join(os.tmpdir(), 'dsh-dev-env-downloads')
 }
 
 function speedHistoryFile() {
-  const file = rootsFile()
-  if (!file) return null
-  return path.join(path.dirname(file), 'download-speeds.json')
+  return stateFile('download-speeds.json')
 }
 
-/** 会话交接的存储位置，规则同上：跟着 profile 走，不写进只读的发布物目录。 */
+/** 交接记录的存储位置。 */
 function handoffsFile() {
-  const file = rootsFile()
-  if (!file) return null
-  return path.join(path.dirname(file), 'handoffs.json')
+  return stateFile('handoffs.json')
 }
 
-/** 用户设置的位置，规则同上。 */
+/** 用户设置的位置。 */
 function settingsFile() {
-  const file = rootsFile()
-  if (!file) return null
-  return path.join(path.dirname(file), 'settings.json')
+  return stateFile('settings.json')
 }
 
 /** 解压一个 zip。用系统自带的 tar.exe（Win10 1803+），不额外依赖 7-Zip。 */
@@ -2035,9 +2085,8 @@ export function apply(ctx, config) {
         project,
       )
       byProject[project.key] = record
-      if (!saveRecords(file, byProject)) {
-        return sendJson(res, 500, { ok: false, error: `保存失败：${file || '(没有可用的存储位置)'}` })
-      }
+      const written = saveRecords(file, byProject)
+      if (!written.ok) return sendJson(res, 500, { ok: false, error: `保存失败：${written.error}` })
       sendJson(res, 200, { ok: true, project, record })
     })
 
@@ -2404,9 +2453,8 @@ export function apply(ctx, config) {
             project,
           )
           byProject[project.key] = record
-          if (!saveRecords(file, byProject)) {
-            return { ok: false, error: `保存失败：${file || '(没有可用的存储位置)'}` }
-          }
+          const written = saveRecords(file, byProject)
+          if (!written.ok) return { ok: false, error: `保存失败：${written.error}` }
           return {
             ok: true,
             projectKey: project.key,
