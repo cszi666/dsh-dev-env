@@ -36,13 +36,13 @@ export const SETTING_DEFS = [
   {
     key: 'handoff.autoFillMethod',
     type: 'enum',
-    values: ['current', 'compact'],
-    default: 'current',
+    values: ['fork', 'current', 'compact'],
+    default: 'fork',
     group: 'handoff',
     label: { zh: '一键填充的方式', en: 'How one-click fill works' },
     why: {
-      zh: '"current"：把对话内容交给**当前对话的模型**总结。最准，但会占用你正缺的上下文。"compact"：改用 **DSH 的压缩服务**另起一次总结，不占用当前对话——但按它的契约，它会**就地改写这段对话的历史**（把一段消息替换成一个摘要节点），所以它是顺带压缩了对话，而不只是产出一份能带走的记录。默认 current。',
-      en: '"current" hands the conversation to the **current model** to summarise: most accurate, but it spends the context you are short of. "compact" uses **DSH\'s compaction service** instead, which does not spend the current conversation — but by its contract it **rewrites that conversation\'s history in place** (a span of messages becomes one summary node), so it compacts as a side effect rather than only producing a portable record. Defaults to current.',
+      zh: '"fork"（默认）：起一个**继承了这段对话上下文**的子智能体来总结——它能真读到这段对话，而且**不占用主对话的上下文**。"current"：交给主对话的模型，最直接，但会占用你正缺的上下文。"compact"：改用 DSH 的压缩服务——按它的契约会**就地改写这段对话的历史**（把一段消息替换成一个摘要节点），所以它是顺带压缩了对话，而不只是产出一份能带走的记录。',
+      en: '"fork" (default) starts a subagent that **inherits this conversation\'s context**: it can actually read the conversation, and it does **not** spend the main context. "current" hands the content to the main conversation\'s model — most direct, but it spends the context you are short of. "compact" uses DSH\'s compaction service, which by its contract **rewrites this conversation\'s history** (a span of messages becomes one summary node), so it compacts as a side effect rather than only producing a portable record.',
     },
   },
   {

@@ -128,7 +128,8 @@ window.__ModuleLoader__.load({
       fillNow: '一键填充',
       filling: '已请 DSH 生成…',
       fillSent: '已请这个对话的模型总结；它调用工具写入后，这份记录会自动出现（可稍等再刷新）',
-      fillCompactUnavailable: '这个环境里 compaction 不可用，无法用压缩方式总结。请在设置里改用「用当前对话总结」。',
+      fillCompactUnavailable: '这个环境里 compaction 不可用，无法用压缩方式总结。请在设置里改用「用子智能体总结」。',
+      fillDone: '已由子智能体写好了条例',
       tagButton: '添加标签',
       tagPick: '给这份交接打标签',
       tagPickHint: '标签由你决定，插件不会自己打。全选会占用更多 token，但也让这份记录更容易被检索到。',
@@ -175,7 +176,8 @@ window.__ModuleLoader__.load({
       settingsIntro: '这些是默认行为。每一项都写明它会改变什么；改动保存后立即生效，不需要重启。',
       settingsSave: '保存设置',
       settingsSaved: '已保存',
-      methodCurrent: '用当前对话总结（默认）',
+      methodFork: '用子智能体总结（默认，不占用本对话上下文）',
+      methodCurrent: '用当前对话总结（会占用本对话上下文）',
       methodCompact: '用 DSH 压缩服务总结（会就地压缩这段对话）',
       speed: '速率',
       eta: '剩余',
@@ -284,7 +286,8 @@ window.__ModuleLoader__.load({
       fillNow: 'Fill from this conversation',
       filling: 'Asked DSH to write it…',
       fillSent: 'Asked this conversation to summarise; the record appears once the tool call lands (refresh in a moment)',
-      fillCompactUnavailable: 'Compaction is unavailable here, so it cannot summarise that way. Switch the setting to "summarise in this conversation".',
+      fillCompactUnavailable: 'Compaction is unavailable here, so it cannot summarise that way. Switch the setting to "summarise with a subagent".',
+      fillDone: 'The clause was written by a subagent',
       tagButton: 'Tag it',
       tagPick: 'Tag this handover',
       tagPickHint: 'Tags are your call; the plugin never adds them on its own. Tagging everything costs more tokens but makes the record easier to find later.',
@@ -331,7 +334,8 @@ window.__ModuleLoader__.load({
       settingsIntro: 'These are defaults. Each one says what it changes; saving takes effect immediately, with no restart.',
       settingsSave: 'Save settings',
       settingsSaved: 'Saved',
-      methodCurrent: 'Summarise in this conversation (default)',
+      methodFork: 'Summarise with a subagent (default, costs no main context)',
+      methodCurrent: 'Summarise in this conversation (spends this context)',
       methodCompact: 'Use DSH compaction (which rewrites this conversation)',
       speed: 'rate',
       eta: 'left',
@@ -744,23 +748,35 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 一键填充：请这个对话的模型把工作写成交接。内容由模型通过工具落盘，面板轮询后自然看到。 */
+      /** 一键填充：请一个**继承本对话上下文**的子智能体写出条例（或退回用当前对话）。 */
       const fill = async () => {
         setFilling(true)
         setError(null)
+        setFilled(false)
         try {
-          // 先问能力：选 B 却不可用时必须**当场报错**，而不是静默用 A——两者代价不同。
-          const capability = await api(`/handoff/capability?sessionId=${encodeURIComponent(sessionId)}`)
-          const method = (settings && settings['handoff.autoFillMethod']) || 'current'
-          if (method === 'compact' && !(capability.capability || {}).canCompact) {
-            throw new Error(t('fillCompactUnavailable'))
-          }
-          await api('/handoff/fill', {
+          // 先问能力：选了一条做不到的路径必须**当场报错**，而不是静默换一条——它们的代价不同。
+          const capability = (await api(`/handoff/capability?sessionId=${encodeURIComponent(sessionId)}`)).capability || {}
+          const preferred = (settings && settings['handoff.autoFillMethod']) || 'fork'
+          // 设置里选的那条不可用时，退回"用当前对话"并**说明**，不假装那条成了。
+          const method = preferred === 'fork' && !capability.canSubagentFill
+            ? 'current'
+            : preferred === 'compact' && !capability.canCompact
+              ? 'current'
+              : preferred
+          const payload = await api('/handoff/fill', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId, method, lang: currentLang }),
           })
-          setFilled(true)
+          // fork 是**同步**完成的：它直接把新记录还给我，所以立刻就能显示，且能确认真的写入了。
+          if (payload.record) {
+            setProject(payload.project || project)
+            setRecord(payload.record)
+            setFilled(true)
+          } else {
+            // current 是异步的（模型随后才调工具），所以只能说"已请它写"，之后再刷新看结果。
+            setFilled(true)
+          }
         } catch (err) {
           setError(String((err && err.message) || err))
         } finally {
@@ -1289,7 +1305,11 @@ window.__ModuleLoader__.load({
                           onChange: (event) => set(item.key, event.target.value),
                         },
                         (item.values || []).map((value) =>
-                          h('option', { value, key: value }, t(value === 'compact' ? 'methodCompact' : 'methodCurrent')),
+                          h(
+                            'option',
+                            { value, key: value },
+                            t(value === 'fork' ? 'methodFork' : value === 'compact' ? 'methodCompact' : 'methodCurrent'),
+                          ),
                         ),
                       ),
                       h('span', null, item.label),

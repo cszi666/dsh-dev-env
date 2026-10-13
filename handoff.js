@@ -278,6 +278,125 @@ export function saveRecords(file, byProject) {
 }
 
 /**
+ * 从一段文本里解析出交接的五节内容。**刻意做成容错的纯文本解析**，而不是要求 JSON。
+ *
+ * 起因是一次真实失败：模型在工具参数里拼 JSON 时反斜杠转义出错，整轮以
+ * `MALFORMED_RESPONSE / tool input is invalid JSON` 结束，连带同一轮里其它成功的写入一起作废。
+ * 所以这条路**不再经过模型的 JSON**：子智能体写自然文本，解析在宿主侧完成，容忍缺节、缺标题、
+ * 大小写与编号差异——宁可少解析一节，也不要因为格式差一点就整份丢掉。
+ */
+export function parseSummary(text) {
+  const raw = typeof text === 'string' ? text : ''
+  if (!raw.trim()) return null
+  // 优先取 <summary> 块；没有就整段当正文——DSH 的压缩摘要带标记，但子智能体可能不带。
+  const block = /<summary>([\s\S]*?)<\/summary>/i.exec(raw)
+  const body = (block ? block[1] : raw).trim()
+  const out = { summary: '', done: [], discoveries: '', todo: [], doing: [], next: '', preserve: '' }
+  // 五节的标题在 DSH 原文里是英文编号；同时认中文标题，因为正文语言由用户决定。
+  const heads = [
+    ['summary', /^\s*(?:1\.|一[、.]|#+\s*)?\s*(?:Task Overview|任务概述|目标)/i],
+    ['done', /^\s*(?:2\.|二[、.]|#+\s*)?\s*(?:Current State|当前状态|已完成)/i],
+    ['discoveries', /^\s*(?:3\.|三[、.]|#+\s*)?\s*(?:Important Discoveries|重要发现|经验)/i],
+    ['nextSteps', /^\s*(?:4\.|四[、.]|#+\s*)?\s*(?:Next Steps|下一步)/i],
+    ['preserve', /^\s*(?:5\.|五[、.]|#+\s*)?\s*(?:Context to Preserve|需要保留)/i],
+  ]
+  const buckets = { summary: [], done: [], discoveries: [], nextSteps: [], preserve: [] }
+  let current = null
+  // 标题出现**之前**的内容不能丢：子智能体完全可能只给一份列表、不写标题，
+  // 而"没有标题就把全部内容丢掉"会让一次成功的总结变成空记录。
+  const intro = []
+  for (const line of body.split(/\r?\n/)) {
+    const head = heads.find(([, re]) => re.test(line))
+    if (head) {
+      current = head[0]
+      // 标题行本身可能带内容（`1. Task Overview: 做了 X`），冒号后的部分要留下。
+      const rest = line.replace(/^[^:：]*[:：]/, '').trim()
+      if (rest && rest !== line.trim()) buckets[current].push(rest)
+      continue
+    }
+    if (current) buckets[current].push(line)
+    else intro.push(line)
+  }
+  // 标题前的内容按"列表项 vs 段落"分流：列表项是任务，段落是概述。
+  for (const line of intro) {
+    if (/^\s*(?:[-*+]|\d+[.)])\s+/.test(line)) buckets.nextSteps.push(line)
+    else buckets.summary.push(line)
+  }
+  const join = (rows) => rows.join('\n').trim()
+  out.summary = join(buckets.summary)
+  out.discoveries = join(buckets.discoveries)
+  out.preserve = join(buckets.preserve)
+
+  // 清单行：`- xxx` / `* xxx` / `1. xxx`。已勾选的 `- [x]` 归到 done，未勾选的归到 todo。
+  const classify = (rows) => {
+    for (const line of rows) {
+      const bullet = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line)
+      if (!bullet) continue
+      let text = bullet[1].trim()
+      if (!text) continue
+      // `[x]` / `[ ]` 两种勾选写法。
+      const tick = /^\[(x|X|\s)\]\s*(.*)$/.exec(text)
+      let done = false
+      if (tick) {
+        done = tick[1].toLowerCase() === 'x'
+        text = tick[2].trim()
+      }
+      // `in progress:` 前缀来自渲染器，解析时还原成归属信息。
+      const progress = /^in progress[:：]\s*(.*)$/i.exec(text)
+      if (progress) {
+        out.doing.push(progress[1].trim())
+        continue
+      }
+      const nextMark = /^next[:：]\s*(.*)$/i.exec(text)
+      if (nextMark) {
+        out.next = nextMark[1].trim()
+        continue
+      }
+      if (done) out.done.push(text)
+      else out.todo.push(text)
+    }
+  }
+  classify(buckets.nextSteps)
+  classify(buckets.done)
+
+  const empty = !out.summary && !out.discoveries && !out.preserve && !out.next && !out.todo.length && !out.done.length && !out.doing.length
+  return empty ? null : out
+}
+
+/**
+ * 把解析出来的五节写成一份记录。**保留已有的任务 id**：按文字匹配，匹配上的沿用原 id 与原顺序，
+ * 这样一次自动填充不会把用户手动排好的优先级和刚打的标签冲掉。
+ */
+export function recordFromSummary(parsed, previous, project) {
+  // 容忍传入 null：解析失败时调用方**不应该**被迫先判空——忘了判就会抛，而抛在写入路径上意味着
+  // 一次"看起来失败"的填充把已有记录留在半路。这里统一兜成一个空解析结果。
+  const source = parsed && typeof parsed === 'object' ? parsed : {}
+  const before = previous && previous.handoff ? previous.handoff : {}
+  const taskIds = new Map()
+  for (const row of [...(before.todo || []), ...(before.doing || [])]) {
+    if (row && row.text) taskIds.set(row.text, row.id)
+  }
+  const asTasks = (rows) =>
+    (rows || []).map((text, index) => ({ id: taskIds.get(text) || `a${index + 1}`, text, done: false, tag: null }))
+  return normaliseRecord(
+    {
+      // 标签与已完成记录都保留：自动填充只负责更新"要做什么"，不该抹掉别的层。
+      tags: previous ? previous.tags : [],
+      lastSessionId: previous ? previous.lastSessionId : null,
+      summary: source.summary,
+      done: [...(before.done || []), ...(source.done || [])].slice(0, LIMITS.items),
+      discoveries: source.discoveries,
+      preserve: source.preserve,
+      notes: [source.discoveries, source.preserve].filter(Boolean).join('\n\n'),
+      todo: asTasks(source.todo),
+      doing: asTasks(source.doing),
+      next: source.next,
+    },
+    project,
+  )
+}
+
+/**
  * 把一份交接渲染成"喂给另一个对话的开场"。
  *
  * 和交接给对话（jobHandoffPrompt）的区别：那条说的是"插件任务正在发生什么"，这条说的是

@@ -40,7 +40,7 @@ import {
   rootsFile,
 } from '../paths.js'
 import { describeProbeHint } from '../roots.js'
-import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, loadRecords, saveRecords } from '../handoff.js'
+import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, loadRecords, saveRecords, parseSummary, recordFromSummary } from '../handoff.js'
 import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView, SETTING_DEFS } from '../settings.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
@@ -1179,33 +1179,42 @@ check('settings fall back to defaults, and reject values of the wrong type', () 
   }
 })
 
-check('an enum setting only accepts its listed values, and defaults to "current"', () => {
+check('an enum setting only accepts its listed values, and defaults to the subagent', () => {
   // A misspelled enum is not cosmetic: the value selects HOW an entire conversation gets summarised, so
   // silently falling through to some other branch would spend the user's context the way they did not
   // ask for. Anything unrecognised must land on the default instead.
   const def = SETTING_DEFS.find((row) => row.key === 'handoff.autoFillMethod')
   assert(def, 'handoff.autoFillMethod should exist')
   assert(def.type === 'enum' && Array.isArray(def.values), 'it should be an enum with listed values')
-  assert(def.default === 'current', 'the default is the current-conversation method')
+  // `fork` is the default because it is the only route that both reads this conversation and spends no
+  // main context — the capability probe reports a provider with inheritsParentContext on this machine.
+  assert(def.default === 'fork', `the default should be the subagent route, got ${def.default}`)
+  assert(def.values.includes('fork') && def.values.includes('current') && def.values.includes('compact'),
+    `all three routes should be offered, got ${JSON.stringify(def.values)}`)
 
   assert(normaliseSettings({ 'handoff.autoFillMethod': 'compact' })['handoff.autoFillMethod'] === 'compact')
   assert(normaliseSettings({ 'handoff.autoFillMethod': 'current' })['handoff.autoFillMethod'] === 'current')
-  for (const bad of ['Compact', 'COMPACT', 'other', '', 1, null, true, {}]) {
+  assert(normaliseSettings({ 'handoff.autoFillMethod': 'fork' })['handoff.autoFillMethod'] === 'fork')
+  for (const bad of ['Fork', 'FORK', 'other', '', 1, null, true, {}]) {
     const got = normaliseSettings({ 'handoff.autoFillMethod': bad })['handoff.autoFillMethod']
-    assert(got === 'current', `${JSON.stringify(bad)} should fall back to current, got ${JSON.stringify(got)}`)
+    assert(got === 'fork', `${JSON.stringify(bad)} should fall back to fork, got ${JSON.stringify(got)}`)
   }
   // The setting must be reachable from the settings page, which is the only place a user can change it.
   const items = settingsView(null, 'zh').groups.flatMap((group) => group.items)
   const shown = items.find((row) => row.key === 'handoff.autoFillMethod')
   assert(shown, 'the fill method must appear on the settings page')
-  assert(shown.value === 'current', 'the page should show the default')
+  assert(shown.value === 'fork', 'the page should show the default')
   // The candidate values must reach the page: a select with no options is a control that exists and
   // cannot be used, which is worse than no control. This was missing on the first pass.
-  assert(Array.isArray(shown.values) && shown.values.length === 2,
+  assert(Array.isArray(shown.values) && shown.values.length === 3,
     `the enum's values must be projected to the page, got ${JSON.stringify(shown.values)}`)
-  assert(shown.values.includes('current') && shown.values.includes('compact'), 'both methods must be offered')
-  // Its explanation has to state the side effect of the other option, since that is the whole tradeoff.
-  assert(/压缩|compact/i.test(shown.why) && /current/i.test(shown.why), 'the explanation must name both methods')
+  for (const method of ['fork', 'current', 'compact']) {
+    assert(shown.values.includes(method), `${method} must be offered`)
+  }
+  // Its explanation has to name every option, since the differences are the whole tradeoff.
+  for (const word of ['fork', 'current', 'compact']) {
+    assert(shown.why.includes(word), `the explanation must name ${word}`)
+  }
 })
 
 check('settings round-trip through a file, and a corrupt file falls back', () => {
@@ -1569,6 +1578,80 @@ check('a finished task moves to Current State instead of staying in Next Steps',
   assert(!nextSteps.includes('已经做完'), 'a finished task must not sit in next steps')
   assert(currentState.includes('已经做完'), 'a finished task belongs in current state')
   assert(currentState.includes('项目级成果'), 'the project-level results still belong in current state')
+})
+
+check('the summary parser reads DSH\'s sections out of plain text', () => {
+  // This parser exists because the previous route asked the model to build JSON, and a single
+  // over-escaped Windows path ended the whole turn with MALFORMED_RESPONSE — discarding the successful
+  // writes that shared it. Plain text cannot fail that way, so the parsing moved here. It must be
+  // forgiving: a missing heading or a different bullet should cost one field, never the whole record.
+  const text = [
+    '我在接着另一个对话继续做事。',
+    '<summary>',
+    '1. Task Overview',
+    '把条例改成项目键控',
+    '2. Current State',
+    '- [x] 存储改造',
+    '- 子智能体填充',
+    '3. Important Discoveries',
+    'DSH 的 prompt 是单向的',
+    '4. Next Steps',
+    '- in progress: 改填充路径',
+    '- [ ] 禁用 B 选项',
+    '5. Context to Preserve',
+    '用户偏好中文输出',
+    '</summary>',
+  ].join('\n')
+  const parsed = parseSummary(text)
+  assert(parsed, 'a well-formed summary must parse')
+  assert(parsed.summary.includes('项目键控'), `summary: ${parsed.summary}`)
+  assert(parsed.discoveries.includes('单向'), 'discoveries should be read')
+  assert(parsed.preserve.includes('中文输出'), 'context to preserve should be read')
+  assert(parsed.done.includes('存储改造'), `a ticked item belongs to done, got ${JSON.stringify(parsed.done)}`)
+  assert(parsed.todo.includes('禁用 B 选项'), 'an unticked item is a task')
+  assert(parsed.doing.includes('改填充路径'), 'an in-progress line is separated out')
+  assert(!parsed.todo.includes('存储改造'), 'a ticked item must not also be a task')
+
+  // Forgiving cases: no tags at all, Chinese headings, a heading with the content on the same line.
+  const bare = parseSummary('- 一件事\n- 另一件')
+  assert(bare && bare.todo.length === 2, `untagged bullets should still be tasks, got ${JSON.stringify(bare && bare.todo)}`)
+  const zh = parseSummary('1. 任务概述\n做一件事\n\n2. 当前状态\n- [x] 做完了\n\n4. 下一步\n- [ ] 接着做')
+  assert(zh && zh.summary.includes('做一件事'), 'Chinese headings must be recognised')
+  assert(zh.todo.includes('接着做'), 'Chinese next-steps must produce tasks')
+  const inline = parseSummary('1. Task Overview: 一句话说完')
+  assert(inline && inline.summary.includes('一句话说完'), 'content on the heading line must be kept')
+
+  // Nothing usable is null, not an empty record: the caller writes nothing rather than wiping the clause.
+  for (const junk of [null, undefined, '', '   ', 42, '<summary></summary>']) {
+    assert(parseSummary(junk) === null, `${JSON.stringify(junk)} should parse to null`)
+  }
+})
+
+check('a parsed summary keeps the ids of tasks it already had', () => {
+  // Reordering and tagging are the user's work. A fill that reassigned ids would silently discard both:
+  // the task would look the same but its identity, and therefore its manual position, would be gone.
+  const previous = __test.normaliseRecord(
+    {
+      summary: '旧',
+      todo: [{ id: 'keep-me', text: '禁用 B 选项', tag: 'continuation' }],
+      tags: ['continuation'],
+    },
+    __test.projectKeyOf('D:\\work\\alpha', 's-1'),
+  )
+  const parsed = parseSummary('4. Next Steps\n- 禁用 B 选项\n- 新发现的任务')
+  const record = recordFromSummary(parsed, previous, __test.projectKeyOf('D:\\work\\alpha', 's-1'))
+  const kept = record.handoff.todo.find((row) => row.text === '禁用 B 选项')
+  assert(kept, 'the existing task must still be there')
+  assert(kept.id === 'keep-me', `its id must be preserved, got ${kept.id}`)
+  assert(record.handoff.todo.some((row) => row.text === '新发现的任务'), 'a new task must be added')
+  // The tags layer is not the parser's business and must survive untouched.
+  assert(record.tags.includes('continuation'), 'tags must not be cleared by a fill')
+
+  // Junk input must not throw.
+  for (const junk of [null, undefined, {}]) {
+    const empty = recordFromSummary(junk, null, __test.projectKeyOf('D:\\x', 's-1'))
+    assert(empty && empty.handoff, `${JSON.stringify(junk)} should still produce a record`)
+  }
 })
 
 // ------------------------------------------------------------------ packaging

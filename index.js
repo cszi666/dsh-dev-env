@@ -19,7 +19,7 @@ import { CATALOG, CATEGORIES } from './catalog.js'
 import { expandEnv, expandGlob, safeRead, rootsFile, envRoots, configuredRoots, mentionsRoots, parentDirStartingPoint } from './paths.js'
 import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeHint, explainVerdict } from './roots.js'
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
-import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText } from './handoff.js'
+import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText, parseSummary, recordFromSummary } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
@@ -2133,14 +2133,79 @@ export function apply(ctx, config) {
       if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId：不知道要总结哪个对话' })
 
       const capability = await probeAutoFill(scope || ctx, sessionId)
-      const method = body.method === 'compact' ? 'compact' : 'current'
+      const method = body.method === 'fork' ? 'fork' : body.method === 'compact' ? 'compact' : 'current'
       // 选了 B 但 B 不可用时**明确报错**，不静默退回 A：两者代价不同（B 会就地改写这段对话），
       // 悄悄替换等于在用户没同意的情况下做了另一件事。
       if (method === 'compact' && !capability.canCompact) {
         return sendJson(res, 400, {
           ok: false,
-          error: `这个环境里 compaction 不可用，无法用压缩方式总结（${capability.detail.join('；') || '缺少服务'}）。可以改用"用当前对话总结"。`,
+          error: `这个环境里 compaction 不可用，无法用压缩方式总结（${capability.detail.join('；') || '缺少服务'}）。可以改用"用当前对话总结"或"用子智能体总结"。`,
         })
+      }
+      if (method === 'fork' && !capability.canSubagentFill) {
+        return sendJson(res, 400, { ok: false, error: '这个环境里没有会继承对话上下文的子智能体 provider，无法用它总结。' })
+      }
+
+      // **fork 子智能体**：它带有父对话的上下文（provider 声明 inheritsParentContext），
+      // 所以能真读到这段对话，而**不占用主对话的上下文**——那正是用户要的。
+      // 它的输出由宿主解析落盘，**不再经过模型的 JSON 参数**：那条通道刚坏过一次。
+      if (method === 'fork') {
+        const agents = getService(scope || ctx, 'agents')
+        const subagents = getService(scope || ctx, 'subagents')
+        if (!subagents || typeof subagents.start !== 'function') {
+          return sendJson(res, 503, { ok: false, error: '子智能体服务不可用' })
+        }
+        const parent = agents && typeof agents.get === 'function' ? agents.get(sessionId) : undefined
+        if (!parent) {
+          // 没有活着的 agent 就没有"父"可继承。如实说明，而不是换一条路悄悄做别的事。
+          return sendJson(res, 400, {
+            ok: false,
+            error: '这个对话当前没有活着的 agent，子智能体无法继承它的上下文。可以先用"用当前对话总结"。',
+          })
+        }
+        const provider = capability.subagentProviders.find((row) => row.inheritsParentContext)
+        const abort = new AbortController()
+        try {
+          const run = await subagents.start(provider.name, {
+            label: 'dev-env 条例填充',
+            prompt: [{ type: 'text', text: handoffFillPrompt(body.lang) }],
+            parent,
+            signal: abort.signal,
+            // 只给写入工具，避免子智能体顺手改别的东西。
+            toolFilter: { allow: ['dev_env_handoff_write', 'dev_env_tasks'] },
+          })
+          try {
+            const result = await run.result
+            const text = (result.output || [])
+              .map((block) => (block && block.type === 'text' ? block.text : ''))
+              .filter(Boolean)
+              .join('\n')
+            const parsed = parseSummary(text)
+            if (!parsed) {
+              return sendJson(res, 502, { ok: false, error: '子智能体没有产出可解析的摘要', raw: text.slice(0, 500) })
+            }
+            const file = handoffsFile()
+            const { byProject } = loadRecords(file)
+            const project = await projectForSession(scope || ctx, sessionId)
+            const record = recordFromSummary(parsed, byProject[project.key], project)
+            record.lastSessionId = sessionId
+            byProject[project.key] = record
+            const written = saveRecords(file, byProject)
+            if (!written.ok) return sendJson(res, 500, { ok: false, error: written.error })
+            return sendJson(res, 200, {
+              ok: true,
+              via: 'fork',
+              project,
+              record,
+              summary: '已由子智能体写条例',
+            })
+          } finally {
+            // 运行结束就释放，避免子智能体常驻。
+            await run.dispose().catch(() => {})
+          }
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: `子智能体失败：${String((error && error.message) || error)}` })
+        }
       }
 
       const text = handoffFillPrompt(body.lang)
@@ -2151,7 +2216,7 @@ export function apply(ctx, config) {
         ctx,
         text,
         requestId: `dev-env-fill-${randomUUID()}`,
-        summary: '已请 DSH 把这段工作写成交接',
+        summary: '已请 DSH 把这段工作写成条例',
         sessionId,
       })
     })
