@@ -9,6 +9,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A manual, in the settings and readable by DSH.** A page under Settings covers what the plugin does,
+  how filling a gap works, how the clause works, and — most usefully — **what it cannot do here**
+  (`winget` unusable, `github.com` unreachable, compaction unavailable, and why the panel deliberately
+  cannot start processes). The same text is served to the model by **`dev_env_manual`**, optionally one
+  section (`what` / `install` / `clause` / `limits` / `tools`).
+  - **One source, two readers.** The page and the tool both render `manual.js`, so they cannot disagree.
+    A manual that contradicts the implementation is worse than none, because the model acts on it and the
+    reader cannot tell — so the manual also lists every registered tool and every setting, and guards fail
+    the build when either drifts. The first run of that guard caught the manual omitting `dev_env_manual`
+    itself.
+  - The limits section states failures that were actually measured on this machine rather than
+    hypothetical ones, and a guard requires those facts to stay present.
+
+### Added
+
 - **A project clause can be carried into a conversation, automatically or by hand.** The picker sits at
   `conversation.input.dock` — directly above the composer, in the row that already holds the todo, goal
   and queue entries. That slot is a **list** with `replaceRisk: none`, so a new id is added beside them.

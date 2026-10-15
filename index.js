@@ -21,6 +21,7 @@ import { loadRoots, saveRoots, addRoot, removeRoot, normaliseDir, describeProbeH
 import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, recordSpeed, inspectPending } from './downloads.js'
 import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, clausePrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText, parseSummary, recordFromSummary } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
+import { manualText, manualView } from './manual.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -2312,6 +2313,17 @@ export function apply(ctx, config) {
       })
     })
 
+    // 说明书：设置页与 dev_env_manual 工具读的是**同一份数据**（manual.js），
+    // 所以界面与模型看到的说明不可能不一致。
+    register('/dsh-dev-env/api/manual', async (req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const lang = url.searchParams.get('lang') === 'en' ? 'en' : 'zh'
+      const section = url.searchParams.get('section') || null
+      // 指定了节就顺带把纯文本版本一起给出，方便"复制给别的对话"这类用法。
+      const text = section ? manualText(lang, section) : null
+      sendJson(res, 200, { ok: true, manual: manualView(lang), text })
+    })
+
     // 用户设置：读取与保存。设置页（settings.section）用它渲染，其余功能用它决定默认行为。
     register('/dsh-dev-env/api/settings', async (req, res) => {
       const method = (req.method || 'GET').toUpperCase()
@@ -2729,6 +2741,49 @@ export function apply(ctx, config) {
         },
       }),
     'dsh-dev-env: tool dev_env_tasks',
+  )
+
+  /**
+   * 说明书工具。**给 DSH 读的那一份与人看的完全同源**（都来自 manual.js）。
+   *
+   * 为什么值得单独做一个工具：模型不知道这个插件有什么、边界在哪，就会猜——猜出来的用法会出错，
+   * 出错后它会去试更离谱的做法。让它查一份**和界面同源**的说明，比在系统提示里塞一大段更省，也比
+   * 让它自己探索更准。
+   */
+  effect(
+    ctx,
+    () =>
+      ctx.tools.register({
+        name: 'dev_env_manual',
+        description:
+          '读取 dsh-dev-env 的说明书：它做什么、每个工具（dev_env_inventory / dev_env_install / dev_env_job / dev_env_handoff_write / dev_env_tasks）该怎么用、所有设置项的作用，以及它在这台机器上**做不到什么**（winget 不可用、github 不通、compaction 不可用、面板不能启动进程）。不确定这个插件能做什么时先读它，不要猜。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            section: {
+              type: 'string',
+              enum: ['what', 'install', 'clause', 'limits', 'tools'],
+              description: '只读某一节，省略则返回全部。limits 那节说明已知边界，最值得先看。',
+            },
+            lang: { type: 'string', enum: ['zh', 'en'], description: '语言，默认 zh' },
+          },
+        },
+        output: {
+          schema: { type: 'object', additionalProperties: true },
+          render: (args, value) => [
+            {
+              type: 'text',
+              text: value && value.ok === true ? value.text : `读取失败：${(value && value.error) || '未知原因'}`,
+            },
+          ],
+        },
+        async execute(args) {
+          const input = args && typeof args === 'object' ? args : {}
+          return manualText(input.lang === 'en' ? 'en' : 'zh', input.section || null)
+        },
+      }),
+    'dsh-dev-env: tool dev_env_manual',
   )
 
   // 卸载时收掉仍在前台跑的安装进程

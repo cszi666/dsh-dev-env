@@ -159,6 +159,8 @@ window.__ModuleLoader__.load({
       clauseRightEmpty: '还没有任务。',
       clauseUntagged: '未分类',
       clauseCount: '项',
+      manualTools: 'DSH 可以调用的工具',
+      manualSettings: '设置项一览',
       clauseDock: '项目条例',
       clauseDockHint: '把某个项目的条例作为大前提带进这个对话',
       clauseDockPick: '带上哪个项目的条例',
@@ -327,6 +329,8 @@ window.__ModuleLoader__.load({
       clauseUntagged: 'Untagged',
       clauseCount: 'items',
       clauseReorder: '拖动可调顺序',
+      manualTools: 'Tools DSH can call',
+      manualSettings: 'Settings at a glance',
       clauseDock: 'Project clause',
       clauseDockHint: 'Bring a project\'s clause into this conversation as its premise',
       clauseDockPick: 'Which project\'s clause',
@@ -1488,6 +1492,106 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 设置里的说明书页。内容来自 `/api/manual`，与 `dev_env_manual` 工具**同源**——
+     * 界面显示的和 DSH 读到的不可能不一致，否则模型会照着与界面不符的说明做事。
+     */
+    function DevEnvManualSection() {
+      const [view, setView] = React.useState(null)
+      const [error, setError] = React.useState(null)
+
+      React.useEffect(() => {
+        let alive = true
+        api(`/manual?lang=${currentLang}`)
+          .then((payload) => {
+            if (alive) setView(payload.manual)
+          })
+          .catch((err) => {
+            if (alive) setError(String((err && err.message) || err))
+          })
+        return () => {
+          alive = false
+        }
+      }, [])
+
+      if (!view) {
+        return h('div', { className: 'dsh-de-settings' }, h('div', { className: 'dsh-de-msg' }, error || t('loading')))
+      }
+
+      /** 说明书正文里有 `**粗体**` 与反引号——渲染成真实样式，而不是把标记原样显示。 */
+      const rich = (text) => {
+        const nodes = []
+        let rest = String(text)
+        let key = 0
+        for (;;) {
+          const bold = /\*\*([^*]+)\*\*/.exec(rest)
+          const code = /`([^`]+)`/.exec(rest)
+          const next = [bold, code].filter(Boolean).sort((a, b) => a.index - b.index)[0]
+          if (!next) {
+            if (rest) nodes.push(rest)
+            break
+          }
+          if (next.index > 0) nodes.push(rest.slice(0, next.index))
+          nodes.push(
+            next === bold
+              ? h('b', { key: `b${key++}` }, next[1])
+              : h('code', { className: 'dsh-de-cmd', key: `c${key++}` }, next[1]),
+          )
+          rest = rest.slice(next.index + next[0].length)
+        }
+        return nodes
+      }
+
+      return h(
+        'div',
+        { className: 'dsh-de-settings' },
+        h('style', null, SETTINGS_CSS),
+        h('div', { className: 'dsh-de-sethead' }, h('h2', null, view.title)),
+        h('div', { className: 'dsh-de-pickq' }, view.intro),
+        error ? h('div', { className: 'dsh-de-err' }, error) : null,
+        view.sections.map((section) =>
+          h(
+            'div',
+            { className: 'dsh-de-setgroup', key: section.id },
+            h('div', { className: 'dsh-de-setgrouptitle' }, section.title),
+            section.body.map((paragraph, index) => h('div', { className: 'dsh-de-setwhy', key: index }, rich(paragraph))),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'dsh-de-setgroup' },
+          h('div', { className: 'dsh-de-setgrouptitle' }, t('manualTools')),
+          view.tools.map((tool) =>
+            h(
+              'div',
+              { className: 'dsh-de-setrow', key: tool.name },
+              h(
+                'div',
+                { className: 'dsh-de-setlabel' },
+                h('code', { className: 'dsh-de-cmd' }, tool.name),
+                h('span', null, ` — ${tool.when}`),
+              ),
+              h('div', { className: 'dsh-de-setwhy' }, rich(tool.does)),
+              h('div', { className: 'dsh-de-setkey' }, tool.note),
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'dsh-de-setgroup' },
+          h('div', { className: 'dsh-de-setgrouptitle' }, t('manualSettings')),
+          view.settings.map((row) =>
+            h(
+              'div',
+              { className: 'dsh-de-setrow', key: row.key },
+              h('div', { className: 'dsh-de-setwhy' }, rich(row.text)),
+              h('div', { className: 'dsh-de-setkey' }, row.key),
+            ),
+          ),
+        ),
+      )
+    }
+
     const SETTINGS_CSS = `
 .dsh-de-settings{padding:16px 18px;font-size:13px;color:var(--dsw-alias-label-primary);overflow:auto;height:100%;box-sizing:border-box}
 .dsh-de-sethead{display:flex;align-items:center;gap:8px;margin-bottom:4px}
@@ -2605,6 +2709,18 @@ window.__ModuleLoader__.load({
           )
         } catch {
           /* 没有这个槽位（旧版本 DSH）就退化为"改 settings.json"，功能不受影响 */
+        }
+        // 设置里的说明书页。同一个 settings.section 槽位用另一个 id，所以它是**独立的一页**，
+        // 不会和「Dev Env 设置」挤在一起。
+        try {
+          ctx.slots.inject('settings.section', () =>
+            ctx.slots.register(
+              { name: 'settings.section', id: 'dev-env-manual', order: 26, locale: NS, label: () => t('manualTitle') },
+              DevEnvManualSection,
+            ),
+          )
+        } catch {
+          /* 旧版本没有这个槽位就退化为"只有设置页" */
         }
         // 输入框上方的条例选择器。这个槽位是 list 型、replaceRisk 为 none，
         // 所以加自己的 id 只会落在 todo/goal/queue 旁边，不顶掉任何已有条目。

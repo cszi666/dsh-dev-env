@@ -42,6 +42,7 @@ import {
 import { describeProbeHint } from '../roots.js'
 import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, clausePrompt, loadRecords, saveRecords, parseSummary, recordFromSummary } from '../handoff.js'
 import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView, SETTING_DEFS } from '../settings.js'
+import { MANUAL_TOOLS, MANUAL_SETTINGS, MANUAL_SECTIONS, manualView, manualText } from '../manual.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
 
@@ -1712,6 +1713,70 @@ check('tools never accept a path from the caller, though they may report one', (
     assert(!/cwd/.test(params), `${tool} must not accept a working directory either`)
     assert(/exec\.agent/.test(body), `${tool} should take its session from the run context`)
   }
+})
+
+check('the manual covers every tool, setting and known limit — and cannot silently drift', () => {
+  // A manual that disagrees with the implementation is worse than none: a model reads it and acts on
+  // stale claims, and the reader has no way to tell. Every field it lists is derivable from the source,
+  // so drift is detectable rather than merely regretted.
+  const index = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  const registered = [...index.matchAll(/name: '(dev_env_[a-z_]+)'/g)].map((m) => m[1])
+  const documented = MANUAL_TOOLS.map((row) => row.name)
+  for (const name of registered) {
+    assert(documented.includes(name), `${name} is registered but missing from the manual`)
+  }
+  for (const name of documented) {
+    assert(registered.includes(name), `${name} is documented but no longer registered`)
+  }
+  assert(registered.length >= 6, `expected the whole toolset, found ${registered.length}`)
+
+  const settingKeys = SETTING_DEFS.map((row) => row.key)
+  const manualKeys = MANUAL_SETTINGS.map((row) => row.key)
+  for (const key of settingKeys) assert(manualKeys.includes(key), `${key} is a setting but undocumented`)
+  for (const key of manualKeys) assert(settingKeys.includes(key), `${key} is documented but not a setting`)
+
+  for (const section of MANUAL_SECTIONS) {
+    for (const lang of ['zh', 'en']) {
+      const body = section.body[lang]
+      assert(Array.isArray(body) && body.length >= 2, `${section.id}.${lang} needs real prose`)
+      assert(body.every((row) => typeof row === 'string' && row.length > 30), `${section.id}.${lang} has a stub paragraph`)
+      assert(section.title[lang], `${section.id} needs a ${lang} title`)
+    }
+  }
+  // The limits section is the one a model most needs, and the failures it records are not hypothetical.
+  const limits = MANUAL_SECTIONS.find((row) => row.id === 'limits')
+  assert(limits, 'the limits section must exist')
+  const limitsZh = limits.body.zh.join('\n')
+  for (const fact of ['winget', 'github', 'compaction', '启动进程', 'JSON']) {
+    assert(limitsZh.includes(fact), `the limits section should state the ${fact} limitation`)
+  }
+})
+
+check('the manual text is generated from the same data the page renders', () => {
+  // One source, two readers. Were the tool's text written separately it would drift from the page, and
+  // the model would act on a different manual than the one the user can see.
+  const view = manualView('zh')
+  const text = manualText('zh')
+  assert(text.ok === true, 'the full manual should render')
+  assert(text.text.includes(view.title), 'the text should carry the page title')
+  for (const section of view.sections) {
+    assert(text.text.includes(section.title), `the text is missing the ${section.id} section`)
+  }
+  for (const tool of view.tools) assert(text.text.includes(tool.name), `the text is missing ${tool.name}`)
+
+  // A single section is addressable, which keeps a lookup cheap.
+  const one = manualText('zh', 'limits')
+  assert(one.ok === true && one.text.includes('winget'), 'a section lookup should work')
+  assert(!one.text.includes(view.tools[0].name), 'a section lookup should not drag in the whole tool list')
+
+  // An unknown section is refused with the list of valid ones, so the caller can correct itself.
+  const bad = manualText('zh', 'nope')
+  assert(bad.ok === false && bad.error.includes('what'), `an unknown section should list the valid ids, got ${bad.error}`)
+
+  // English must be genuinely English, not the Chinese text under a different label.
+  const en = manualText('en')
+  assert(en.text.includes('Known limits'), 'the English manual needs its own section titles')
+  assert(!/[\u4e00-\u9fff]/.test(en.text), 'the English manual must not contain Chinese prose')
 })
 
 // ------------------------------------------------------------------ packaging
