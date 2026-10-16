@@ -132,12 +132,12 @@ on a missing secret. Create an npm automation token, then store it as the reposi
 (Settings → Secrets and variables → Actions → New repository secret), and only then:
 
 ```powershell
-git tag v1.1.2
-git push origin v1.1.2
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 That publishes the package through `.github/workflows/release.yml`, and gives the link at the bottom of
-`CHANGELOG.md` (`releases/tag/v1.1.2`) something to resolve to.
+`CHANGELOG.md` (`releases/tag/v1.2.0`) something to resolve to.
 
 Prefer publishing by hand? Run `npm publish --access public` first and push the tag afterwards. The
 workflow refuses to publish a version that is already on the registry, so the tag run becomes a no-op —

@@ -5,17 +5,19 @@ memory of the previous one can continue without re-deriving anything.
 
 ## Where things stand
 
-- **npm**: `@cszi666/dsh-dev-env@1.1.1` is the newest published version. `1.1.0` is **broken** — its
-  tarball was missing `describe.js`, so it could not activate. `1.0.0` works but predates everything
-  below. **1.1.2 is prepared in the tree but not published**: it renames the package back to the
-  unscoped `dsh-dev-env`, which is free again (`npm view dsh-dev-env version` → `E404`).
-- **Everything on the list below is implemented and green.** `npm test` runs 71 checks, and the
+- **npm**: `dsh-dev-env@1.2.0` is prepared in the tree and **not yet published**. The newest published
+  version is `dsh-dev-env@1.1.2` (unscoped), and `@cszi666/dsh-dev-env@1.1.1` is the last scoped one.
+  `1.1.0` is **broken** — its tarball was missing `describe.js`, so it could not activate.
+- **Everything on the list below is implemented and green.** `npm test` runs 123 checks, and the
   human-only steps that remain are listed in *Known gaps* rather than in *Next*.
 - **The installed plugin is a `link:` to this working tree**, so whatever is in the tree is what DSH
   loads. Client-side changes need a page refresh; Host-side changes need a **DSH restart** (the Host
   module is imported once at startup).
-- **The `link:` still points at the scoped name**, so a DSH restart is needed for this release's
-  routes and download mode to take effect, even before publishing.
+- **1.2.0 is a behavioural step, not a polish one.** It adds four agent tools, a project clause keyed by
+  project directory, a settings page, a manual DSH can read, and fixes for three faults that only
+  appeared on a real machine: a `winget` that cannot run at all, a tool argument whose over-escaped
+  Windows path ended a whole turn with `MALFORMED_RESPONSE`, and a state directory that could not be
+  created. The last two were found by using the plugin, not by reading it.
 
 ## Decisions already made (do not reopen)
 
@@ -23,8 +25,18 @@ memory of the previous one can continue without re-deriving anything.
   [RELEASING.md](RELEASING.md) under *Package name*. The HTTP route prefix `/dsh-dev-env/api/*`
   deliberately did not move with it, nor did the repository name.
 - **Nothing is published until the work is done and has been exercised by hand.** The publish itself is
-  a human step: `npm test`, `npm pack --dry-run`, then `npm publish` (or a `v1.1.2` tag for the
+  a human step: `npm test`, `npm pack --dry-run`, then `npm publish` (or a `v1.2.0` tag for the
   workflow).
+- **No tool accepts a path from the caller, and this is not negotiable.** The project always comes from
+  the calling session. A model writing a Windows path into a tool argument is what produced the
+  `MALFORMED_RESPONSE` that discarded a whole turn, so `dev_env_handoff_write` and `dev_env_tasks` have
+  no `projectPath` parameter, and a guard checks their parameter blocks for one.
+- **The manual and the settings page render the same data.** A manual that contradicts the
+  implementation is worse than none, so `manual.js` is the single source and guards fail the build when
+  a tool or setting drifts out of it.
+- **The panel still cannot start a process, on purpose.** A host route that accepts a command from the
+  page is arbitrary code execution as the user. If launching is ever added, the command must be declared
+  in the catalog per entry and never supplied by the caller.
 - **Features that need several round trips are deliberately last**, after the single-shot ones are
   stable. That means `dev_env_add_root` and the "let DSH find the folder" hand-off come after the
   plain folder picker works.

@@ -1,6 +1,6 @@
 {
   "name": "dsh-dev-env",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "DSH plugin: inventory your Windows dev/test toolchain, spot the gaps, and fill them with one click.",
   "keywords": [
     "dsh",

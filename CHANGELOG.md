@@ -5,7 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-13
+
+**This release turns the panel from an installer into something that keeps a project's state across
+conversations, and it is the release where several long-standing limits were measured rather than
+assumed.** Four new agent tools, a project clause keyed by project directory, a settings page, a manual,
+and a set of fixes for faults that only showed up on a real machine — a broken `winget`, a
+`MALFORMED_RESPONSE` that discarded a whole turn, and a state directory that could not be created.
 
 ### Added
 
@@ -524,6 +530,7 @@ it, and are recorded because they describe behaviour a user would otherwise hit.
 - No runtime dependencies, and no `peerDependencies` on purpose, so DSH's pre-install
   version-compatibility gate cannot block the plugin.
 
+[1.2.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.2.0
 [1.1.2]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.2
 [1.1.1]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.1
 [1.1.0]: https://github.com/cszi666/dsh-dev-env/releases/tag/v1.1.0

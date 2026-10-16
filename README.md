@@ -144,15 +144,15 @@ which reads as a broken application rather than a broken plugin. `1.1.0` shipped
 the order below matters. Paste this into a session:
 
 ```
-I have an older @cszi666/dsh-dev-env installed and I want dsh-dev-env@1.1.2.
+I have an older @cszi666/dsh-dev-env installed and I want dsh-dev-env@1.2.0.
 
 Do this in order, without skipping steps:
 1. Use plugin_manager list_bundles to tell me which name and version is installed right now.
 2. remove_bundle it first. Do not install over it: DSH keeps the old bundle row, and if the new one
    fails to load it reports "1 entry did not activate dev-env: failed to import", which looks like
    the whole application is broken.
-3. install_bundle dsh-dev-env@1.1.2 — pinned, so the result can be checked.
-4. list_bundles again and confirm it shows dsh-dev-env at 1.1.2, then report the application status.
+3. install_bundle dsh-dev-env@1.2.0 — pinned, so the result can be checked.
+4. list_bundles again and confirm it shows dsh-dev-env at 1.2.0, then report the application status.
 5. If it is restart-required, tell me; do not restart the client yourself.
 ```
 
