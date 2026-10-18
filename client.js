@@ -194,6 +194,17 @@ window.__ModuleLoader__.load({
       eta: '剩余',
       fromOwnDownload: '自己下载',
       extResumed: '已续传',
+      clauseReorder: '拖动可调顺序',
+      stateTab: '状态',
+      stateIntro: '这个对话还有多少余量——数字是实测的，清单是给你自己判断的。',
+      stateUnknown: '无法确定',
+      stateUnknownHint: '拿不到模型窗口大小，所以算不出百分比；这不是错误，只是这个路由没有报告它。',
+      stateMessages: '保留消息数',
+      stateCompactions: '已压缩次数',
+      stateChecklist: '需要你自己判断',
+      stateChecklistHint: '勾选只在本页有效、不会上报。中两条以上说明这个对话在失去保真度，该先写条例。',
+      stateChecklistWarn: '中了两条以上：现在就该更新项目条例，然后换对话。',
+      stateLimitNote: '说明：它测不出模型"累不累"——没有那个通道。它测的是上下文饱和，那才是"对话变长后状态变差"的真正原因。',
     }
     const DICT_EN = {
       panel: 'Dev Env',
@@ -328,7 +339,17 @@ window.__ModuleLoader__.load({
       clauseRightEmpty: 'No tasks yet.',
       clauseUntagged: 'Untagged',
       clauseCount: 'items',
-      clauseReorder: '拖动可调顺序',
+      stateTab: 'State',
+      stateIntro: 'How much room this conversation has left — the numbers are measured, the checklist is yours to judge.',
+      stateUnknown: 'Undetermined',
+      stateUnknownHint: 'The model window size was not reported, so no percentage can be computed. Not an error — just a route that does not announce it.',
+      stateMessages: 'messages retained',
+      stateCompactions: 'compactions',
+      stateChecklist: 'Judge these yourself',
+      stateChecklistHint: 'Ticking is local to this tab and never reported. Two or more means this conversation is losing fidelity — write the clause first.',
+      stateChecklistWarn: 'Two or more: update the project clause now, then move to a new conversation.',
+      stateLimitNote: 'Note: this cannot measure whether the model is tired — there is no channel for that. It measures context saturation, which is the real cause of answers getting worse as a conversation grows.',
+      clauseReorder: 'drag to reorder',
       manualTools: 'Tools DSH can call',
       manualSettings: 'Settings at a glance',
       clauseDock: 'Project clause',
@@ -1331,6 +1352,138 @@ window.__ModuleLoader__.load({
 .dsh-de-dockbtn{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer}
 .dsh-de-dockbtn:hover{border-color:var(--dsw-alias-brand-primary)}
 .dsh-de-dockpanel{position:absolute;bottom:100%;left:0;margin-bottom:6px;z-index:30;width:min(560px,90vw);max-height:340px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+`
+
+    /**
+     * 「状态」页签：把 `dev_env_state` 用到的那些数字**画出来**。
+     *
+     * 与工具读的是**同一个测量函数**（host 的 `/api/state` 调 `measureState`），所以页签上的百分比
+     * 和模型看到的一致——否则用户会以为模型在报一个它自己都没看到的数。
+     *
+     * 页签只读：不写任何东西，也不给"健康分数"。数字是死的，判断在用户手里。
+     */
+    function DevEnvStateView(props) {
+      const sessionId = sessionIdFrom(props)
+      const [state, setState] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      const [ticked, setTicked] = React.useState({})
+
+      React.useEffect(() => {
+        if (!sessionId) return undefined
+        let alive = true
+        // 每 10 秒自己刷新：状态随时间变，只在打开时取一次会让它一进来就过时。
+        const load = () => {
+          api(`/state?sessionId=${encodeURIComponent(sessionId)}&lang=${currentLang}`)
+            .then((payload) => {
+              if (alive) setState(payload.state)
+            })
+            .catch((err) => {
+              if (alive) setError(String((err && err.message) || err))
+            })
+        }
+        load()
+        const timer = setInterval(load, 10000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [sessionId])
+
+      const shell = (body) => h('div', { className: 'dsh-de-state' }, h('style', null, STATE_CSS), body)
+
+      if (!sessionId) return shell(h('div', { className: 'dsh-de-msg' }, t('handoffNoSession')))
+      if (!state) return shell(h('div', { className: 'dsh-de-msg' }, error || t('loading')))
+
+      const pressure = state.pressure || {}
+      const ratio = typeof pressure.ratio === 'number' ? pressure.ratio : null
+      const band = (state.bands || []).find((row) => row.id === pressure.band) || null
+      const percent = ratio === null ? null : Math.max(0, Math.min(100, ratio * 100))
+      // 越接近上限越醒目。颜色在这里定，阈值仍由 host 的档位给出——不在两处各写一遍。
+      const color =
+        pressure.band === 'critical'
+          ? 'var(--dsw-alias-danger-primary, #d33)'
+          : pressure.band === 'hot'
+            ? 'var(--dsw-alias-warning-primary, #d80)'
+            : 'var(--dsw-alias-brand-primary)'
+      const tickCount = Object.values(ticked).filter(Boolean).length
+      const num = (value) => (typeof value === 'number' ? value.toLocaleString() : '—')
+
+      return shell(
+        h(
+          'div',
+          null,
+          h('h2', { className: 'dsh-de-stateh' }, t('stateTab')),
+          h('div', { className: 'dsh-de-pickq' }, t('stateIntro')),
+
+          // 主视觉：一根饱和度条 + 一个大数字——"调用的数字"里最需要被看见的那个。
+          h(
+            'div',
+            { className: 'dsh-de-gauge' },
+            h(
+              'div',
+              { className: 'dsh-de-gaugehead' },
+              h('span', { className: 'dsh-de-gaugeval' }, percent === null ? '—' : `${percent.toFixed(1)}%`),
+              h('span', { className: 'dsh-de-gaugeband' }, band ? (currentLang === 'zh' ? band.zh : band.en) : t('stateUnknown')),
+            ),
+            h('div', { className: 'dsh-de-bar' }, h('span', { style: { width: `${percent === null ? 0 : percent}%`, background: color } })),
+            h(
+              'div',
+              { className: 'dsh-de-gaugesub' },
+              percent === null ? pressure.reason || t('stateUnknownHint') : `${num(pressure.usedTokens)} / ${num(pressure.contextWindow)} tokens`,
+            ),
+            band ? h('div', { className: 'dsh-de-gaugeadvice' }, currentLang === 'zh' ? band.advice.zh : band.advice.en) : null,
+          ),
+
+          // 次要数字：它们解释"上下文为什么涨上来的"。
+          h(
+            'div',
+            { className: 'dsh-de-figs' },
+            h('div', { className: 'dsh-de-fig' }, h('b', null, num(state.messages)), h('span', null, t('stateMessages'))),
+            h('div', { className: 'dsh-de-fig' }, h('b', null, num(state.compactions)), h('span', null, t('stateCompactions'))),
+          ),
+
+          // 清单：**勾选只在本页有效、不上报**。它是给人自查用的，不是数据。
+          h(
+            'div',
+            { className: 'dsh-de-setgroup' },
+            h('div', { className: 'dsh-de-setgrouptitle' }, `${t('stateChecklist')}${tickCount ? ` · ${tickCount}` : ''}`),
+            h('div', { className: 'dsh-de-setwhy' }, t('stateChecklistHint')),
+            (state.checklist || []).map((symptom) =>
+              h(
+                'label',
+                { className: 'dsh-de-statecheck', key: symptom.id },
+                h('input', {
+                  type: 'checkbox',
+                  checked: Boolean(ticked[symptom.id]),
+                  onChange: (event) => setTicked((cur) => Object.assign({}, cur, { [symptom.id]: event.target.checked })),
+                }),
+                h('span', null, currentLang === 'zh' ? symptom.zh : symptom.en),
+              ),
+            ),
+            tickCount >= 2 ? h('div', { className: 'dsh-de-err' }, t('stateChecklistWarn')) : null,
+          ),
+
+          h('div', { className: 'dsh-de-setwhy' }, t('stateLimitNote')),
+        ),
+      )
+    }
+
+    const STATE_CSS = `
+.dsh-de-state{padding:16px 18px;font-size:13px;color:var(--dsw-alias-label-primary);overflow:auto;height:100%;box-sizing:border-box}
+.dsh-de-stateh{margin:0 0 4px;font-size:14px;font-weight:600}
+.dsh-de-gauge{margin:14px 0 16px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-de-gaugehead{display:flex;align-items:baseline;gap:10px}
+.dsh-de-gaugeval{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.dsh-de-gaugeband{font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-bar{height:8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin:8px 0 6px}
+.dsh-de-bar span{display:block;height:100%;border-radius:999px;transition:width .4s ease}
+.dsh-de-gaugesub{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-gaugeadvice{font-size:12px;line-height:1.6;margin-top:6px}
+.dsh-de-figs{display:flex;gap:10px;margin-bottom:14px}
+.dsh-de-fig{flex:1;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);display:flex;flex-direction:column;gap:2px}
+.dsh-de-fig b{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}
+.dsh-de-fig span{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-statecheck{display:flex;align-items:flex-start;gap:7px;padding:4px 2px;font-size:12px;line-height:1.5;cursor:pointer}
 `
 
     /** 页签自己的样式。面板那份 CSS 是另一个座位的，不该互相依赖。 */
@@ -2709,6 +2862,18 @@ window.__ModuleLoader__.load({
           )
         } catch {
           /* 没有这个槽位（旧版本 DSH）就退化为"改 settings.json"，功能不受影响 */
+        }
+        // 「状态」页签，就在「项目条例」旁边（order 30 > 20）。同样用自己的 id，
+        // 所以是**加一格**而不是顶掉 chat/trajectory。
+        try {
+          ctx.slots.inject('conversation.view', () =>
+            ctx.slots.register(
+              { name: 'conversation.view', id: 'dev-env-state', order: 30, locale: NS, label: () => t('stateTab') },
+              DevEnvStateView,
+            ),
+          )
+        } catch {
+          /* 没有这个槽位就退化为"只能用 dev_env_state 工具问" */
         }
         // 设置里的说明书页。同一个 settings.section 槽位用另一个 id，所以它是**独立的一页**，
         // 不会和「Dev Env 设置」挤在一起。

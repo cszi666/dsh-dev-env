@@ -1847,6 +1847,34 @@ check('a description that enumerates the tools names all of them', () => {
   }
 })
 
+check('both dictionaries carry every key, or the other language shows raw keys', () => {
+  // A key present in one dictionary and missing from the other does not fail loudly: the panel renders
+  // the key itself, so the Chinese UI would read "stateTab". That is nearly how the 状态 tab shipped —
+  // its entries went into the English dictionary by mistake, and the duplicate-key guard said nothing
+  // because there was no duplicate.
+  const source = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  const lines = source.split('\n')
+  const zhAt = lines.findIndex((line) => line.includes('const DICT_ZH = {'))
+  const enAt = lines.findIndex((line) => line.includes('const DICT_EN = {'))
+  assert(zhAt >= 0 && enAt > zhAt, 'both dictionaries should exist, Chinese first')
+  // Bound each dictionary at its own closing brace. Slicing from DICT_EN to the end of the file would
+  // sweep in every later object literal — the first run of this guard reported `method: 'POST'` from a
+  // fetch call as a dictionary key.
+  const endOf = (from) => {
+    for (let i = from + 1; i < lines.length; i += 1) if (/^ {4}\}$/.test(lines[i])) return i
+    return lines.length
+  }
+  const zhEnd = endOf(zhAt)
+  const enEnd = endOf(enAt)
+  const keysIn = (from, to) =>
+    [...new Set([...lines.slice(from, to).join('\n').matchAll(/^\s{4,}([A-Za-z][A-Za-z0-9_]*):/gm)].map((m) => m[1]))]
+  const zh = keysIn(zhAt, zhEnd)
+  const en = keysIn(enAt, enEnd)
+  assert(zh.length > 40 && en.length > 40, `dictionaries look too small (${zh.length}/${en.length})`)
+  for (const key of zh) assert(en.includes(key), `'${key}' is in the Chinese dictionary but missing from English`)
+  for (const key of en) assert(zh.includes(key), `'${key}' is in the English dictionary but missing from Chinese`)
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 

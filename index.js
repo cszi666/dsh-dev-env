@@ -23,7 +23,7 @@ import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, 
 import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, clausePrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText, parseSummary, recordFromSummary } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 import { manualText, manualView } from './manual.js'
-import { assessPressure, renderAssessment, SYMPTOMS } from './state.js'
+import { assessPressure, renderAssessment, SYMPTOMS, PRESSURE_BANDS } from './state.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -1114,6 +1114,53 @@ async function probeAutoFill(ctx, sessionId) {
   // A 始终可用（只要会话服务在），因为它只是把一段文本作为提问投进对话。
   report.canAutoFill = report.sessions
   return report
+}
+
+/**
+ * 一个会话的状态测量。**工具与「状态」页签共用这一份**，所以两者不可能给出不同的数字。
+ *
+ * 三处真实性保证：
+ *   · token 数来自 `tokenMeter.measure()`，不是按字数估的；
+ *   · 窗口大小来自路由声明的 `requestContext()`，不是常量；
+ *   · 任一项拿不到就返回 `unknown` 并说明缺什么——**凭空的比例看起来和测量一模一样**。
+ */
+function measureState(ctx, sessionId, lang) {
+  const agents = getService(ctx, 'agents')
+  const agent = agents && typeof agents.get === 'function' && sessionId ? agents.get(sessionId) : undefined
+  const session = agent && agent.session
+  if (!session) {
+    return {
+      ok: false,
+      error: '拿不到当前会话对象，因此无法测量上下文占用。这不影响你继续工作，只是没法给出数字。',
+    }
+  }
+
+  let surfaceTokens = null
+  const meter = getService(ctx, 'tokenMeter')
+  if (meter && typeof meter.measure === 'function') {
+    try {
+      const measured = meter.measure(session)
+      surfaceTokens = measured && typeof measured.surfaceTokens === 'number' ? measured.surfaceTokens : null
+    } catch (error) {
+      return { ok: false, error: `测量上下文失败：${String((error && error.message) || error).slice(0, 120)}` }
+    }
+  }
+  const context = typeof session.requestContext === 'function' ? session.requestContext() : null
+  const contextWindow = context && typeof context.contextWindow === 'number' ? context.contextWindow : null
+
+  let messages = null
+  let compactions = null
+  try {
+    if (typeof session.deriveMessages === 'function') messages = session.deriveMessages().length
+    const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : []
+    compactions = events.filter((event) => event && typeof event.type === 'string' && event.type.startsWith('compaction/')).length
+  } catch {
+    /* 统计失败不影响主结论：饱和度的两个输入已经拿到了 */
+  }
+
+  const pressure = assessPressure(surfaceTokens, contextWindow)
+  const text = renderAssessment({ pressure, messages, compactions, contextWindowSource: contextWindow !== null }, lang)
+  return { ok: true, pressure, messages, compactions, symptoms: SYMPTOMS.map((row) => row.id), text }
 }
 
 /**
@@ -2326,6 +2373,19 @@ export function apply(ctx, config) {
       sendJson(res, 200, { ok: true, manual: manualView(lang), text })
     })
 
+    // 状态页签的数据。与 dev_env_state 工具**同一个测量函数**，所以数字不会不一致。
+    // 页签是只读展示：它不写任何东西，也不参与判断——判断在用户手里。
+    register('/dsh-dev-env/api/state', async (req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const sessionId = url.searchParams.get('sessionId') || ''
+      const lang = url.searchParams.get('lang') === 'en' ? 'en' : 'zh'
+      if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId' })
+      const measured = measureState(scope || ctx, sessionId, lang)
+      if (!measured.ok) return sendJson(res, 503, measured)
+      // 页面需要档位文案与清单全文，工具用不到那部分，所以在这里补上而不是塞进工具输出。
+      sendJson(res, 200, { ok: true, state: Object.assign({}, measured, { bands: PRESSURE_BANDS, checklist: SYMPTOMS }) })
+    })
+
     // 用户设置：读取与保存。设置页（settings.section）用它渲染，其余功能用它决定默认行为。
     register('/dsh-dev-env/api/settings', async (req, res) => {
       const method = (req.method || 'GET').toUpperCase()
@@ -2823,53 +2883,7 @@ export function apply(ctx, config) {
           const input = args && typeof args === 'object' ? args : {}
           const lang = input.lang === 'en' ? 'en' : 'zh'
           const sessionId = (exec && exec.agent && exec.agent.id) || null
-          const agents = getService(ctx, 'agents')
-          const agent = agents && typeof agents.get === 'function' && sessionId ? agents.get(sessionId) : undefined
-          const session = agent && agent.session
-          if (!session) {
-            return {
-              ok: false,
-              error: '拿不到当前会话对象，因此无法测量上下文占用。这不影响你继续工作，只是没法给出数字。',
-            }
-          }
-
-          // 真实的 token 数。拿不到就不编——`measure` 抛错时如实上报。
-          let surfaceTokens = null
-          const meter = getService(ctx, 'tokenMeter')
-          if (meter && typeof meter.measure === 'function') {
-            try {
-              const measured = meter.measure(session)
-              surfaceTokens = measured && typeof measured.surfaceTokens === 'number' ? measured.surfaceTokens : null
-            } catch (error) {
-              return { ok: false, error: `测量上下文失败：${String((error && error.message) || error).slice(0, 120)}` }
-            }
-          }
-          // 模型窗口来自路由，不是常量：不同模型差很多，猜一个数字会让百分比毫无意义。
-          const context = typeof session.requestContext === 'function' ? session.requestContext() : null
-          const contextWindow = context && typeof context.contextWindow === 'number' ? context.contextWindow : null
-
-          // 统计：保留的消息数与压缩次数。都来自 surface / 事件日志，不是估算。
-          let messages = null
-          let compactions = null
-          try {
-            if (typeof session.deriveMessages === 'function') messages = session.deriveMessages().length
-            const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : []
-            compactions = events.filter((event) => event && typeof event.type === 'string' && event.type.startsWith('compaction/')).length
-          } catch {
-            /* 统计失败不影响主结论：饱和度的两个输入已经拿到了 */
-          }
-
-          const pressure = assessPressure(surfaceTokens, contextWindow)
-          const text = renderAssessment(
-            {
-              pressure,
-              messages,
-              compactions,
-              contextWindowSource: contextWindow !== null,
-            },
-            lang,
-          )
-          return { ok: true, pressure, messages, compactions, symptoms: SYMPTOMS.map((row) => row.id), text }
+          return measureState(ctx, sessionId, lang)
         },
       }),
     'dsh-dev-env: tool dev_env_state',

@@ -16,6 +16,17 @@ created.
 
 ### Added
 
+- **A 状态 (State) tab beside 项目条例, drawing the same numbers `dev_env_state` reports.** A context-usage
+  gauge with the percentage and its band (充裕 / 过半 / 偏高 / 接近上限), the raw `used / window` token
+  counts, the retained-message and compaction counts, and the same six-symptom checklist — ticked locally
+  and never reported. The colour follows the band, so the bar turns warning-coloured before it is a
+  problem.
+  - **The tab and the tool share one measurement function** (`measureState`), so the percentage on screen
+    cannot disagree with the one the model sees. A user reading a different number would reasonably
+    conclude the model was quoting something it never measured.
+  - It refreshes every ten seconds on its own; a state panel that loads only on open is already out of
+    date by the time it is read.
+  - With no window reported it shows an em dash and says why, instead of a percentage that looks measured.
 - **`dev_env_state`: a state assessment that measures context and refuses to invent the rest.** The
   question behind it was whether a long conversation tires the model. The honest split is that a model has
   no channel for feeling tired and does not tire the way a person does, but it does have a context window,
