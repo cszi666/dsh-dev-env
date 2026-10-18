@@ -9,11 +9,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 **This release turns the panel from an installer into something that keeps a project's state across
 conversations, and it is the release where several long-standing limits were measured rather than
-assumed.** Four new agent tools, a project clause keyed by project directory, a settings page, a manual,
-and a set of fixes for faults that only showed up on a real machine — a broken `winget`, a
-`MALFORMED_RESPONSE` that discarded a whole turn, and a state directory that could not be created.
+assumed.** Four new agent tools on top of the original three, a project clause keyed by project directory,
+a settings page, a manual, and a set of fixes for faults that only showed up on a real machine — a broken
+`winget`, a `MALFORMED_RESPONSE` that discarded a whole turn, and a state directory that could not be
+created.
 
 ### Added
+
+- **`dev_env_state`: a state assessment that measures context and refuses to invent the rest.** The
+  question behind it was whether a long conversation tires the model. The honest split is that a model has
+  no channel for feeling tired and does not tire the way a person does, but it does have a context window,
+  and that fills up — which is the real cause of worsening answers. So the tool reports hard numbers:
+  context usage computed from the token count `tokenMeter` actually measures, against the window the route
+  reports, plus retained messages and compaction count. On top of that it prints a checklist of
+  **behavioural symptoms to judge yourself** — repeating a corrected mistake, forgetting a decided
+  constraint, answers getting vaguer. It deliberately produces **no health score**: a number invites "70 so
+  it is fine", while the decision to start a new conversation turns on specific symptoms. When the window
+  is not reported it says `unknown` and names what is missing, because a fabricated percentage looks like
+  a measurement.
 
 - **A manual, in the settings and readable by DSH.** A page under Settings covers what the plugin does,
   how filling a gap works, how the clause works, and — most usefully — **what it cannot do here**

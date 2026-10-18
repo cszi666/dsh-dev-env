@@ -57,6 +57,7 @@
     "handoff.js",
     "settings.js",
     "manual.js",
+    "state.js",
     "scripts/check.mjs",
     "scripts/client-cancel.test.mjs",
     "cordis.patch.yml",

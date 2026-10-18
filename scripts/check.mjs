@@ -43,6 +43,7 @@ import { describeProbeHint } from '../roots.js'
 import { normaliseHandoff, emptyHandoff, isHandoffEmpty, handoffPrompt, clausePrompt, loadRecords, saveRecords, parseSummary, recordFromSummary } from '../handoff.js'
 import { defaultSettings, normaliseSettings, loadSettings, saveSettings, settingsView, SETTING_DEFS } from '../settings.js'
 import { MANUAL_TOOLS, MANUAL_SETTINGS, MANUAL_SECTIONS, manualView, manualText } from '../manual.js'
+import { assessPressure, renderAssessment, SYMPTOMS } from '../state.js'
 import { __test } from '../index.js'
 import { runClientCancelTests } from './client-cancel.test.mjs'
 
@@ -1777,6 +1778,73 @@ check('the manual text is generated from the same data the page renders', () => 
   const en = manualText('en')
   assert(en.text.includes('Known limits'), 'the English manual needs its own section titles')
   assert(!/[\u4e00-\u9fff]/.test(en.text), 'the English manual must not contain Chinese prose')
+})
+
+check('the state assessment reports what it measures and refuses to invent the rest', () => {
+  // The request was for something like human fatigue. The honest split: a model has no channel for
+  // feeling tired, but it does have a context window that fills up, and that is measurable. So the
+  // assessment reports hard numbers plus a checklist, and never a single "health score" — a score invites
+  // "70 so it is fine", while the decision to start a new conversation turns on specific symptoms.
+  const fresh = assessPressure(1_000, 100_000)
+  assert(fresh.band === 'fresh' && Math.abs(fresh.ratio - 0.01) < 1e-9, `unexpected: ${JSON.stringify(fresh)}`)
+  assert(assessPressure(55_000, 100_000).band === 'warm', '55% should be warm')
+  assert(assessPressure(75_000, 100_000).band === 'hot', '75% should be hot')
+  assert(assessPressure(95_000, 100_000).band === 'critical', '95% should be critical')
+
+  // Missing either input must be reported as unknown, not guessed: a fabricated percentage is worse
+  // than none, because it looks like a measurement.
+  for (const [used, window] of [[null, 100_000], [5_000, null], [0, 100_000], [5_000, 0], [undefined, undefined], ['x', 'y']]) {
+    const row = assessPressure(used, window)
+    assert(row.band === 'unknown' && row.ratio === null, `${used}/${window} should be unknown, got ${row.band}`)
+    assert(row.reason, 'an unknown band must say what is missing')
+  }
+
+  // The report must state its own limit, and must present judged symptoms as judged — not measured.
+  for (const lang of ['zh', 'en']) {
+    const text = renderAssessment(
+      { pressure: assessPressure(75_000, 100_000), messages: 210, compactions: 2, contextWindowSource: true },
+      lang,
+    )
+    assert(text.includes('75.0%'), `${lang} report should carry the percentage`)
+    assert(text.includes('210'), `${lang} report should carry the message count`)
+    assert(text.includes(lang === 'zh' ? '需要你自己判断' : 'Judge these yourself'), `${lang} report must separate judged symptoms`)
+    assert(text.includes(lang === 'zh' ? '测不出' : 'cannot measure'), `${lang} report must state it cannot measure fatigue`)
+    for (const symptom of SYMPTOMS) {
+      assert(
+        text.includes(`- [ ] ${lang === 'zh' ? symptom.zh : symptom.en}`),
+        `${lang} report is missing ${symptom.id}`,
+      )
+    }
+    // A compaction replaced a history span, so the report warns rather than only counting.
+    assert(text.includes(lang === 'zh' ? '替换' : 'replaced'), `${lang} report should explain what a compaction did`)
+  }
+
+  // With no window reported, the report says so instead of printing a misleading percentage.
+  const noWindow = renderAssessment(
+    { pressure: assessPressure(5_000, null), messages: 10, compactions: 0, contextWindowSource: false },
+    'zh',
+  )
+  assert(noWindow.includes('无法计算'), 'a missing window must be reported plainly')
+  assert(!/上下文占用：\*\*/.test(noWindow), 'no percentage may be shown without a window')
+})
+
+check('a description that enumerates the tools names all of them', () => {
+  // `dev_env_manual`'s description lists the other tools by name so a model can see the toolset without
+  // calling it. That list is prose, so the coverage guard above cannot see it — and it went stale the
+  // moment a seventh tool was added while the sentence still named six. Prose enumerations rot silently,
+  // so they are checked too.
+  const index = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  const registered = [...index.matchAll(/name: '(dev_env_[a-z_]+)'/g)].map((m) => m[1])
+  // Prose enumerations wrap across lines, so the capture has to span newlines. An enumeration ends at a
+  // closing bracket or a blank line, whichever comes first.
+  const mentions = [...index.matchAll(/dev_env_inventory \/ dev_env_install[\s\S]*?(?=[）)]|\n\n|\n \*\/)/g)].map((m) => m[0])
+  assert(mentions.length > 0, 'expected at least one prose enumeration of the tools')
+  for (const line of mentions) {
+    for (const tool of registered) {
+      if (tool === 'dev_env_inventory' || tool === 'dev_env_install') continue
+      assert(line.includes(tool), `a prose tool list is missing ${tool}`)
+    }
+  }
 })
 
 // ------------------------------------------------------------------ packaging

@@ -82,6 +82,21 @@ export const MANUAL_TOOLS = [
       en: 'Reading the limits section first saves the most: it states which routes cannot work here, and spares a round of trial and error.',
     },
   },
+  {
+    name: 'dev_env_state',
+    when: {
+      zh: '想知道这个对话还剩多少余量、该不该先写条例再换对话',
+      en: 'To see how much room this conversation has left, and whether to write the clause before switching',
+    },
+    does: {
+      zh: '用 tokenMeter 实测的 token 数与模型窗口算出上下文占用百分比，并给出保留消息数、压缩次数，以及一份需要自己判断的行为征兆清单。',
+      en: 'Computes context usage from the token count tokenMeter actually measures against the model window, and reports retained messages, compaction count, and a checklist of behavioural symptoms to judge yourself.',
+    },
+    note: {
+      zh: '它**测不出**模型累不累——没有那个通道，这类模型也不会像人那样疲惫。它测的是上下文饱和，那才是"对话变长后状态变差"的真正原因。拿不到窗口大小时它说 unknown，不猜。',
+      en: 'It cannot measure whether the model is tired — there is no channel for that, and a model of this kind does not tire the way a person does. It measures context saturation, which is the real cause of "answers got worse as the conversation grew". When the window size is not reported it says unknown rather than guessing.',
+    },
+  },
 ]
 
 /** 设置项：与 settings.js 的 SETTING_DEFS 一致（有守卫检查）。 */

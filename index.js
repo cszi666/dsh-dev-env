@@ -5,7 +5,8 @@
  *   1) 扫描本机已安装的语言 / IDE / 测试工具 / 数据库 / 构建工具，给出精确版本；
  *   2) 对比目录（catalog），算出"缺什么"，并给出可执行的补齐命令；
  *   3) 把同一套能力同时暴露给两条调用路径：
- *        · Agent Tool —— dev_env_inventory / dev_env_install / dev_env_job
+ *        · Agent Tool —— dev_env_inventory / dev_env_install / dev_env_job /
+ *                        dev_env_handoff_write / dev_env_tasks / dev_env_manual / dev_env_state
  *        · HTTP API  —— /dsh-dev-env/api/*（供 Client 面板使用）
  *      两者共用下面这些函数，不存在第二份逻辑。
  */
@@ -22,6 +23,7 @@ import { startDownload, resolveDownload, formatBytes, loadHistory, saveHistory, 
 import { normaliseRecord, emptyRecord, isHandoffEmpty, loadRecords, saveRecords, handoffPrompt, clausePrompt, projectKeyOf, deEscapePath, normaliseTask, normaliseTasks, clampText, parseSummary, recordFromSummary } from './handoff.js'
 import { loadSettings, saveSettings, settingsView } from './settings.js'
 import { manualText, manualView } from './manual.js'
+import { assessPressure, renderAssessment, SYMPTOMS } from './state.js'
 
 // describe.js 只是面板上的一句话文案。它缺失时必须降级成「没有说明」，而不是让整条目录
 // 无法激活——1.1.0 正是因为 files[] 漏了它、npm 没把它打进包，导致每一台装了它的机器都
@@ -2756,7 +2758,7 @@ export function apply(ctx, config) {
       ctx.tools.register({
         name: 'dev_env_manual',
         description:
-          '读取 dsh-dev-env 的说明书：它做什么、每个工具（dev_env_inventory / dev_env_install / dev_env_job / dev_env_handoff_write / dev_env_tasks）该怎么用、所有设置项的作用，以及它在这台机器上**做不到什么**（winget 不可用、github 不通、compaction 不可用、面板不能启动进程）。不确定这个插件能做什么时先读它，不要猜。',
+          '读取 dsh-dev-env 的说明书：它做什么、每个工具（dev_env_inventory / dev_env_install / dev_env_job / dev_env_handoff_write / dev_env_tasks / dev_env_manual / dev_env_state）该怎么用、所有设置项的作用、以及它在这台机器上做不到什么（winget 不可用、github 不通、compaction 不可用、面板不能启动进程）。不确定这个插件能做什么时先读它，不要猜。',
         parameters: {
           type: 'object',
           additionalProperties: false,
@@ -2784,6 +2786,93 @@ export function apply(ctx, config) {
         },
       }),
     'dsh-dev-env: tool dev_env_manual',
+  )
+
+  /**
+   * 智能体状态评估。**只报可测的东西，并明确说清它测不到什么。**
+   *
+   * 起因是用户问"对话这么长，模型会不会像人一样累"。诚实的回答分两半：
+   *   - 模型**没有**疲惫这种体验，也没有内省通道；说"我觉得我累了"是编的。
+   *   - 但**上下文会被填满**，而那是可测的：`tokenMeter.measure(session)` 给出当前保留的
+   *     token 数，`requestContext()` 给出模型窗口，两者相除就是饱和度。
+   *
+   * 所以这个工具给的是**硬指标 + 判断题清单**，而不是一个"健康分数"——把分层信号压成一个数字，
+   * 会诱发"70 分所以还行"的错觉，而该不该换对话取决于具体征兆。
+   */
+  effect(
+    ctx,
+    () =>
+      ctx.tools.register({
+        name: 'dev_env_state',
+        description:
+          '评估当前对话的状态：上下文占用百分比（由 tokenMeter 实测的 token 数与模型窗口算出）、保留的消息数、已压缩次数，并列出需要自己判断的行为征兆清单。它**测不出**模型"累不累"——没有那个通道——只能告诉你这个对话还有多少余量，以及该不该先写条例再换对话。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            lang: { type: 'string', enum: ['zh', 'en'], description: '语言，默认 zh' },
+          },
+        },
+        output: {
+          schema: { type: 'object', additionalProperties: true },
+          render: (args, value) => [
+            { type: 'text', text: value && value.ok === true ? value.text : `评估失败：${(value && value.error) || '未知原因'}` },
+          ],
+        },
+        async execute(args, exec) {
+          const input = args && typeof args === 'object' ? args : {}
+          const lang = input.lang === 'en' ? 'en' : 'zh'
+          const sessionId = (exec && exec.agent && exec.agent.id) || null
+          const agents = getService(ctx, 'agents')
+          const agent = agents && typeof agents.get === 'function' && sessionId ? agents.get(sessionId) : undefined
+          const session = agent && agent.session
+          if (!session) {
+            return {
+              ok: false,
+              error: '拿不到当前会话对象，因此无法测量上下文占用。这不影响你继续工作，只是没法给出数字。',
+            }
+          }
+
+          // 真实的 token 数。拿不到就不编——`measure` 抛错时如实上报。
+          let surfaceTokens = null
+          const meter = getService(ctx, 'tokenMeter')
+          if (meter && typeof meter.measure === 'function') {
+            try {
+              const measured = meter.measure(session)
+              surfaceTokens = measured && typeof measured.surfaceTokens === 'number' ? measured.surfaceTokens : null
+            } catch (error) {
+              return { ok: false, error: `测量上下文失败：${String((error && error.message) || error).slice(0, 120)}` }
+            }
+          }
+          // 模型窗口来自路由，不是常量：不同模型差很多，猜一个数字会让百分比毫无意义。
+          const context = typeof session.requestContext === 'function' ? session.requestContext() : null
+          const contextWindow = context && typeof context.contextWindow === 'number' ? context.contextWindow : null
+
+          // 统计：保留的消息数与压缩次数。都来自 surface / 事件日志，不是估算。
+          let messages = null
+          let compactions = null
+          try {
+            if (typeof session.deriveMessages === 'function') messages = session.deriveMessages().length
+            const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : []
+            compactions = events.filter((event) => event && typeof event.type === 'string' && event.type.startsWith('compaction/')).length
+          } catch {
+            /* 统计失败不影响主结论：饱和度的两个输入已经拿到了 */
+          }
+
+          const pressure = assessPressure(surfaceTokens, contextWindow)
+          const text = renderAssessment(
+            {
+              pressure,
+              messages,
+              compactions,
+              contextWindowSource: contextWindow !== null,
+            },
+            lang,
+          )
+          return { ok: true, pressure, messages, compactions, symptoms: SYMPTOMS.map((row) => row.id), text }
+        },
+      }),
+    'dsh-dev-env: tool dev_env_state',
   )
 
   // 卸载时收掉仍在前台跑的安装进程
