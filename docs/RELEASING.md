@@ -127,6 +127,20 @@ It should list 16 files and no `.github/` directory.
 
 ## 6. Tag the release
 
+**Before tagging, measure whether the version is already published.** Do not rely on memory or on a check
+performed earlier in the session — that is how a release was reported as "not yet published" while it was
+live on the registry:
+
+```powershell
+npm view dsh-dev-env version --prefer-online                          # what latest is right now
+npm view dsh-dev-env@<the version in package.json> --prefer-online    # E404 means genuinely unpublished
+```
+
+`tools/diagnostics/check-published.mjs` runs the same comparison and also diffs the published tarball's
+file list against `files[]`, which answers the other half of the question: whether what is on the registry
+matches the tree. Run it from an ordinary shell — inside a sandbox Node cannot capture a child process's
+output, and the script says "cannot measure" rather than guessing.
+
 Set up npm publishing **before** pushing the tag, otherwise the tag triggers a workflow run that fails
 on a missing secret. Create an npm automation token, then store it as the repository secret `NPM_TOKEN`
 (Settings → Secrets and variables → Actions → New repository secret), and only then:
