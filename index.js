@@ -2717,7 +2717,7 @@ export function apply(ctx, config) {
       ctx.tools.register({
         name: 'dev_env_handoff_write',
         description:
-          '把当前工作的交接（continuation summary）写入 dsh-dev-env 的项目记录，供之后在别的对话里接着做或供别的项目取用。按 DSH 压缩摘要的五节结构填写。只在用户要求生成/更新交接时调用。',
+          '把当前工作的项目条例（continuation summary）写入 dsh-dev-env 的项目记录，供之后在别的对话里接着做或供别的项目取用。按 DSH 压缩摘要的五节结构填写。只在用户要求生成/更新条例时调用。',
         parameters: {
           type: 'object',
           additionalProperties: false,
@@ -2746,7 +2746,7 @@ export function apply(ctx, config) {
             {
               type: 'text',
               text: value && value.ok
-                ? `已写入 ${value.projectPath || value.projectKey} 的交接（${value.todo} 项待办 / ${value.done} 项已完成）。面板的「交接」页签会显示它。`
+                ? `已写入 ${value.projectPath || value.projectKey} 的项目条例（${value.todo} 项待办 / ${value.done} 项已完成）。面板的「项目条例」页签会显示它。`
                 : `写入失败：${(value && value.error) || '未知原因'}`,
             },
           ],
