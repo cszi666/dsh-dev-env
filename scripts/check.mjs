@@ -1181,16 +1181,17 @@ check('settings fall back to defaults, and reject values of the wrong type', () 
   }
 })
 
-check('an enum setting only accepts its listed values, and defaults to the subagent', () => {
+check('an enum setting only accepts its listed values, and defaults to one that works', () => {
   // A misspelled enum is not cosmetic: the value selects HOW an entire conversation gets summarised, so
   // silently falling through to some other branch would spend the user's context the way they did not
   // ask for. Anything unrecognised must land on the default instead.
   const def = SETTING_DEFS.find((row) => row.key === 'handoff.autoFillMethod')
   assert(def, 'handoff.autoFillMethod should exist')
   assert(def.type === 'enum' && Array.isArray(def.values), 'it should be an enum with listed values')
-  // `fork` is the default because it is the only route that both reads this conversation and spends no
-  // main context — the capability probe reports a provider with inheritsParentContext on this machine.
-  assert(def.default === 'fork', `the default should be the subagent route, got ${def.default}`)
+  // The default must be a route that works on an arbitrary build. `fork` is cheaper — it spends none of the
+  // main context — but it needs DSH to expose a subagent starter, which the current build does not, so it
+  // shipped as a default that failed on first use. `current` always works.
+  assert(def.default === 'current', `the default should be the route that always works, got ${def.default}`)
   assert(def.values.includes('fork') && def.values.includes('current') && def.values.includes('compact'),
     `all three routes should be offered, got ${JSON.stringify(def.values)}`)
 
@@ -1199,13 +1200,13 @@ check('an enum setting only accepts its listed values, and defaults to the subag
   assert(normaliseSettings({ 'handoff.autoFillMethod': 'fork' })['handoff.autoFillMethod'] === 'fork')
   for (const bad of ['Fork', 'FORK', 'other', '', 1, null, true, {}]) {
     const got = normaliseSettings({ 'handoff.autoFillMethod': bad })['handoff.autoFillMethod']
-    assert(got === 'fork', `${JSON.stringify(bad)} should fall back to fork, got ${JSON.stringify(got)}`)
+    assert(got === 'current', `${JSON.stringify(bad)} should fall back to current, got ${JSON.stringify(got)}`)
   }
   // The setting must be reachable from the settings page, which is the only place a user can change it.
   const items = settingsView(null, 'zh').groups.flatMap((group) => group.items)
   const shown = items.find((row) => row.key === 'handoff.autoFillMethod')
   assert(shown, 'the fill method must appear on the settings page')
-  assert(shown.value === 'fork', 'the page should show the default')
+  assert(shown.value === 'current', 'the page should show the default')
   // The candidate values must reach the page: a select with no options is a control that exists and
   // cannot be used, which is worse than no control. This was missing on the first pass.
   assert(Array.isArray(shown.values) && shown.values.length === 3,

@@ -37,12 +37,15 @@ export const SETTING_DEFS = [
     key: 'handoff.autoFillMethod',
     type: 'enum',
     values: ['fork', 'current', 'compact'],
-    default: 'fork',
+    // 默认 `current`：`fork` 更省上下文，但它**需要 DSH 向插件暴露子智能体启动入口**，而当前构建只给了
+    // prompt/sendMessage。把默认设成"多数环境做不到的那条"，用户第一次用就会撞墙；想要 fork 的环境，
+    // 能力探测会显示 canForkFill，改这一项即可。
+    default: 'current',
     group: 'handoff',
     label: { zh: '一键填充的方式', en: 'How one-click fill works' },
     why: {
-      zh: '"fork"（默认）：起一个**继承了这段对话上下文**的子智能体来总结——它能真读到这段对话，而且**不占用主对话的上下文**。"current"：交给主对话的模型，最直接，但会占用你正缺的上下文。"compact"：改用 DSH 的压缩服务——按它的契约会**就地改写这段对话的历史**（把一段消息替换成一个摘要节点），所以它是顺带压缩了对话，而不只是产出一份能带走的记录。',
-      en: '"fork" (default) starts a subagent that **inherits this conversation\'s context**: it can actually read the conversation, and it does **not** spend the main context. "current" hands the content to the main conversation\'s model — most direct, but it spends the context you are short of. "compact" uses DSH\'s compaction service, which by its contract **rewrites this conversation\'s history** (a span of messages becomes one summary node), so it compacts as a side effect rather than only producing a portable record.',
+      zh: '"current"（默认）：交给当前对话的模型总结，最直接、任何构建都能用，但会占用你正缺的上下文。"fork"：起一个继承了这段对话上下文的子智能体，不占用主对话——**需要 DSH 暴露子智能体启动入口**，当前构建没有，选了会自动降级为 current。"compact"：改用 DSH 的压缩服务，会**就地改写这段对话的历史**。',
+      en: '"current" (default) hands the work to this conversation\'s model: most direct, works on any build, but spends the context you are short of. "fork" starts a subagent that inherits this conversation\'s context and spends none of the main one — it **requires DSH to expose a subagent starter**, which the current build does not, so choosing it falls back to current. "compact" uses DSH\'s compaction service, which **rewrites this conversation\'s history**.',
     },
   },
   {

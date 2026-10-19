@@ -34,6 +34,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The `fork` fill cannot work in this DSH build, so it no longer refuses — it falls back.** Measured with
+  the capability probe: the subagent registry exposes `list`, `getProvider`, `prompt` and `sendMessage` but
+  **no `start` or `startContinuable`**, and the shipped `app.asar` no longer declares
+  `SubagentProvider.start`. A plugin therefore cannot create a subagent here at all; earlier builds could,
+  which is why this used to work. Asking for `fork` now falls back to `current` and says so in the response,
+  because the cost of that fallback — spending this conversation's context — must not happen silently. The
+  fill-method setting now defaults to `current`, the route that works on any build, instead of a default
+  that failed on first use.
+  - `canForkFill` separates "a provider exists" from "a provider can be started", which is the difference
+    that made the earlier refusal misleading: the probe listed two providers while the service had no way
+    to run either.
 - **The fork fill refused with "子智能体服务不可用" while the capability probe listed two providers.** Measured
   on the live host: the registry answered `list()` and `getProvider()` but had no `start`, so the route's
   single `typeof start` check produced a bare refusal — which reads as "this environment cannot do it". It

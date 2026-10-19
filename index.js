@@ -988,7 +988,7 @@ function jobHelpPrompt(job, item, lang) {
  * sessionController 必须在请求时惰性获取：apply 那一刻它可能还没就绪，一次性 ctx.get 会拿到
  * undefined 而且永不重试。会话列表按活跃度排序，第一个可用且非空白的会话就是用户正在看的那个。
  */
-async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId }) {
+async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId, extra }) {
   const sessions = getService(scope || ctx, 'sessionController')
   if (!sessions || typeof sessions.prompt !== 'function') {
     return sendJson(res, 503, { ok: false, error: '当前 DSH 没有可用的会话服务' })
@@ -1013,7 +1013,8 @@ async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId }) 
       { requestId, sessionId: targetId, mode: 'queue', content: [{ type: 'text', text }] },
       abort.signal,
     )
-    sendJson(res, 200, { ok: true, sessionId: targetId, summary })
+    // `extra` 让调用方带回"这次实际走了哪条路"。降级如果只写在日志里，用户就看不到自己付了什么代价。
+    sendJson(res, 200, Object.assign({ ok: true, sessionId: targetId, summary }, extra || {}))
   } catch (error) {
     sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
   }
@@ -1132,6 +1133,15 @@ async function probeAutoFill(ctx, sessionId) {
     }
   }
   report.canSubagentFill = report.subagentProviders.some((row) => row.inheritsParentContext)
+  // **能不能真的启动一个子智能体**，取决于注册表是否暴露了"启动"入口——光有 provider 不够。
+  // 实测：当前 DSH 构建只有 list/getProvider/prompt/sendMessage，没有 start/startContinuable，
+  // 所以 `fork` 填充在这种构建上**做不到**。如实报告，好过让用户点了才失败。
+  report.subagentStarters = report.subagentMethods.filter((name) => name === 'start' || name === 'startContinuable')
+  report.canStartSubagent = report.subagentStarters.length > 0
+  report.canForkFill = report.canSubagentFill && report.canStartSubagent
+  if (!report.canStartSubagent) {
+    report.detail.push('这个 DSH 构建没有向插件暴露子智能体启动入口（只有 prompt / sendMessage），fork 填充不可用')
+  }
 
   // A 始终可用（只要会话服务在），因为它只是把一段文本作为提问投进对话。
   report.canAutoFill = report.sessions
@@ -2205,17 +2215,27 @@ export function apply(ctx, config) {
       if (!sessionId) return sendJson(res, 400, { ok: false, error: '缺少 sessionId：不知道要总结哪个对话' })
 
       const capability = await probeAutoFill(scope || ctx, sessionId)
-      const method = body.method === 'fork' ? 'fork' : body.method === 'compact' ? 'compact' : 'current'
-      // 选了 B 但 B 不可用时**明确报错**，不静默退回 A：两者代价不同（B 会就地改写这段对话），
+      let method = body.method === 'fork' ? 'fork' : body.method === 'compact' ? 'compact' : 'current'
+
+      // 选了 `compact` 但不可用时**明确报错**，不静默退回：它的代价不同（会就地改写这段对话），
       // 悄悄替换等于在用户没同意的情况下做了另一件事。
       if (method === 'compact' && !capability.canCompact) {
         return sendJson(res, 400, {
           ok: false,
-          error: `这个环境里 compaction 不可用，无法用压缩方式总结（${capability.detail.join('；') || '缺少服务'}）。可以改用"用当前对话总结"或"用子智能体总结"。`,
+          error: `这个环境里 compaction 不可用，无法用压缩方式总结（${capability.detail.join('；') || '缺少服务'}）。可以改用"用当前对话总结"。`,
         })
       }
-      if (method === 'fork' && !capability.canSubagentFill) {
-        return sendJson(res, 400, { ok: false, error: '这个环境里没有会继承对话上下文的子智能体 provider，无法用它总结。' })
+
+      // 选了 `fork` 但这个构建不支持时**自动改用 `current`**，而不是拒绝。
+      //
+      // 判断变了：以前只看"有没有会继承上下文的 provider"，而那只说明**目录里有它**，不代表能让它
+      // 干活。真正需要的是"启动入口"（start / startContinuable），当前 DSH 构建没有暴露。
+      // 拒绝会让用户以为插件坏了；降级并说明，功能仍然通——代价是这次填充会占用本对话的上下文，
+      // 所以这一点必须写进返回里，不能悄悄发生。
+      let fellBackFrom = null
+      if (method === 'fork' && !capability.canForkFill) {
+        fellBackFrom = 'fork'
+        method = 'current'
       }
 
       // **fork 子智能体**：它带有父对话的上下文（provider 声明 inheritsParentContext），
@@ -2312,6 +2332,11 @@ export function apply(ctx, config) {
       }
 
       const text = handoffFillPrompt(body.lang)
+      // 走 `askDsh` 时它是**单向**的：提示词投进去，模型随后调工具写入，路由本身拿不到结果。
+      // 所以这里把"用了哪条路、是否降级"写进返回，面板才能如实告诉用户这次的实际代价。
+      const note = fellBackFrom
+        ? '这个 DSH 构建没有向插件暴露子智能体启动入口，已改用「用当前对话总结」。这次会占用本对话的上下文。'
+        : null
       return askDsh({
         req,
         res,
@@ -2319,8 +2344,9 @@ export function apply(ctx, config) {
         ctx,
         text,
         requestId: `dev-env-fill-${randomUUID()}`,
-        summary: '已请 DSH 把这段工作写成条例',
+        summary: note || '已请 DSH 把这段工作写成条例',
         sessionId,
+        extra: { via: 'current', fellBackFrom, note },
       })
     })
 
