@@ -239,7 +239,13 @@ export function loadRecords(file) {
     const byProject = {}
     for (const [key, value] of Object.entries(parsed.byProject || {})) {
       const project = recordProject(value) ?? { key, path: null, scope: 'unknown' }
-      byProject[project.key] = normaliseRecord(value, project)
+      const record = normaliseRecord(value, project)
+      // **保留存盘时的 updatedAt**。`normaliseRecord` 会把内容层的时间戳设成"现在"，那是写入时的
+      // 语义；如果读取时也这样，每条记录的"最后更新"就永远等于查询时刻——索引排序全部失效，而且
+      // 无法用时间判断"刚才那次填充到底写了没有"。这是真机上量出来的：两条记录时间戳同秒。
+      const stored = value && value.handoff && typeof value.handoff.updatedAt === 'number' ? value.handoff.updatedAt : null
+      if (stored !== null) record.handoff.updatedAt = stored
+      byProject[project.key] = record
     }
 
     let migrated = 0

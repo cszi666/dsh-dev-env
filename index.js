@@ -1020,36 +1020,51 @@ async function askDsh({ res, scope, ctx, text, requestId, summary, sessionId }) 
 }
 
 /**
- * 请模型写交接的提示词。
+ * 请模型写条例的提示词。
  *
- * 节名与结构与 DSH 自己的 `DEFAULT_SUMMARY_PROMPT`（CompactionControl）一致——那份要求五节、
- * 并说明它的用途是"对话历史将被这段摘要替换"。交接做的是同一件事，所以用同一套结构，模型不需要
- * 为这个插件另学一种格式。这里只是把那份要求指到本插件的写入工具上。
+ * **两条路的目标不同，所以提示词必须不同**——这是修一个真实故障得来的：
+ *   · `fork` 子智能体：它把结果**作为文本还回来**，宿主负责写入。所以明确说"不要调用工具"。
+ *   · `current` 当前对话：模型没法把结果还给我（DSH 的 prompt 是单向的），只能靠它**调用工具**写。
+ * 第一版对两者用了同一句话（"调用工具保存，不要只打印"），于是 fork 的子智能体照做了、
+ * 只回一句"已写入"，而宿主在等**文本**——解析不出五节就报错。一个写入者，一个通道。
  */
-function handoffFillPrompt(lang) {
-  return lang === 'en'
+function handoffFillPrompt(lang, options = {}) {
+  const expectText = options.expectText === true
+  const english = lang === 'en'
+  const first = expectText
+    ? english
+      ? 'Write a continuation handover for the work in this conversation and return it as your final message. Do not call any tool — the text you return is what gets recorded.'
+      : '请把这段对话里的工作写成一份条例（continuation handover），**作为你的最终回复返回**。不要调用任何工具——你返回的文本就是被记录下来的内容。'
+    : english
+      ? 'Write a continuation handover for the work in this conversation, then save it by calling the `dev_env_handoff_write` tool. Do not just print it — the tool call is what records it.'
+      : '请把这段对话里的工作写成一份条例（continuation handover），然后**调用 `dev_env_handoff_write` 工具保存它**。不要只打印出来——真正记录下来的那一步是工具调用。'
+  return english
     ? [
-        'Write a continuation handover for the work in this conversation, then save it by calling the `dev_env_handoff_write` tool. Do not just print it — the tool call is what records it.',
+        first,
         '',
         'Use the same five-part structure DSH uses for a compaction summary, because this handover is meant to be read at the start of another conversation in place of the history:',
         '1. Task Overview — the user\'s core request and success criteria, and any constraints they stated',
-        '2. Current State — what is done, files created or changed with paths, key artifacts (pass as `done`)',
-        '3. Important Discoveries — technical constraints, decisions and their rationale, errors and how they were resolved, approaches that did not work (pass as `discoveries`)',
-        '4. Next Steps — specific remaining actions in priority order (`todo`), what is in progress (`doing`), and the immediate next step (`next`)',
-        '5. Context to Preserve — user preferences and style requirements, non-obvious domain details, promises made (pass as `preserve`)',
+        '2. Current State — what is done, files created or changed with paths, key artifacts',
+        '3. Important Discoveries — technical constraints, decisions and their rationale, errors and how they were resolved, approaches that did not work',
+        '4. Next Steps — specific remaining actions in priority order, what is in progress, and the immediate next step',
+        '5. Context to Preserve — user preferences and style requirements, non-obvious domain details, promises made',
         '',
+        ...(expectText
+          ? ['Wrap the whole thing in <summary></summary> tags so the host can read it back.']
+          : []),
         'Be concise but complete. The point is that whoever continues this work does not have to re-derive it or repeat a mistake. Write the content in the language the user has been using.',
       ].join('\n')
     : [
-        '请把这段对话里的工作写成一份交接（continuation handover），然后**调用 `dev_env_handoff_write` 工具保存它**。不要只打印出来——真正记录下来的那一步是工具调用。',
+        first,
         '',
-        '请使用与 DSH 压缩摘要相同的五节结构，因为这份交接的用途就是"在另一个对话的开头代替这段历史被读到"：',
-        '1. Task Overview —— 用户的核心请求与成功标准，以及明确提出的约束（`summary`）',
-        '2. Current State —— 已经完成了什么、涉及的文件与路径、关键产出物（`done`）',
-        '3. Important Discoveries —— 技术约束、决策与理由、遇到的错误及如何解决、试过但不成的方法（`discoveries`）',
-        '4. Next Steps —— 按优先级排列的具体待办（`todo`）、正在进行中的项（`doing`）、紧接着的下一步（`next`）',
-        '5. Context to Preserve —— 用户偏好与风格要求、不明显的领域细节、做过的承诺（`preserve`）',
+        '请使用与 DSH 压缩摘要相同的五节结构，因为这份条例的用途就是"在另一个对话的开头代替这段历史被读到"：',
+        '1. Task Overview —— 用户的核心请求与成功标准，以及明确提出的约束',
+        '2. Current State —— 已经完成了什么、涉及的文件与路径、关键产出物',
+        '3. Important Discoveries —— 技术约束、决策与理由、遇到的错误及如何解决、试过但不成的方法',
+        '4. Next Steps —— 按优先级排列的具体待办、正在进行中的项、紧接着的下一步',
+        '5. Context to Preserve —— 用户偏好与风格要求、不明显的领域细节、做过的承诺',
         '',
+        ...(expectText ? ['请把整份内容包在 <summary></summary> 里，好让宿主读回来。'] : []),
         '要简洁但完整。它的价值在于：接着做的人不必重新推导，也不必重犯同一个错误。内容请用用户一直在用的语言写。',
       ].join('\n')
 }
@@ -2218,11 +2233,15 @@ export function apply(ctx, config) {
         try {
           const run = await subagents.start(provider.name, {
             label: 'dev-env 条例填充',
-            prompt: [{ type: 'text', text: handoffFillPrompt(body.lang) }],
+            // `expectText`：这条路上子智能体**返回文本**，宿主负责写入。提示词与工具过滤必须与之一致，
+            // 否则子智能体照另一条路的指示去调用工具、只回一句"已写入"，而宿主在等文本——解析失败。
+            prompt: [{ type: 'text', text: handoffFillPrompt(body.lang, { expectText: true }) }],
             parent,
             signal: abort.signal,
-            // 只给写入工具，避免子智能体顺手改别的东西。
-            toolFilter: { allow: ['dev_env_handoff_write', 'dev_env_tasks'] },
+            // 禁掉写入类工具：一是"一个写入者"，二是避免子智能体顺手改动本机的其他东西。
+            toolFilter: {
+              deny: ['dev_env_handoff_write', 'dev_env_tasks', 'write', 'edit', 'bash', 'terminal_open', 'terminal_signal'],
+            },
           })
           try {
             const result = await run.result
@@ -2232,7 +2251,14 @@ export function apply(ctx, config) {
               .join('\n')
             const parsed = parseSummary(text)
             if (!parsed) {
-              return sendJson(res, 502, { ok: false, error: '子智能体没有产出可解析的摘要', raw: text.slice(0, 500) })
+              // 把子智能体到底说了什么带出来。只说"没有产出可解析的摘要"会让人无从判断是它没写、
+              // 还是写了格式不对——而这正是排查要分清的两件事。
+              const head = text.replace(/\s+/g, ' ').slice(0, 300)
+              return sendJson(res, 502, {
+                ok: false,
+                error: `子智能体返回的内容解析不出五节结构。它说的是："${head || '(空)'}"。可以重试，或改用「用当前对话总结」。`,
+                raw: text.slice(0, 500),
+              })
             }
             const file = handoffsFile()
             const { byProject } = loadRecords(file)
@@ -2935,8 +2961,7 @@ export const __test = {
   normaliseRecord,
   emptyRecord,
   handoffFillPrompt,
-  probeAutoFill,
-}
+  probeAutoFill,}
 
 // ----------------------------------------------------------------- http helpers
 

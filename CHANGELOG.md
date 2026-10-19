@@ -5,14 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-10-13
-
-**This release turns the panel from an installer into something that keeps a project's state across
-conversations, and it is the release where several long-standing limits were measured rather than
-assumed.** Four new agent tools on top of the original three, a project clause keyed by project directory,
-a settings page, a manual, and a set of fixes for faults that only showed up on a real machine — a broken
-`winget`, a `MALFORMED_RESPONSE` that discarded a whole turn, and a state directory that could not be
-created.
+## [Unreleased]
 
 ### Added
 
@@ -38,6 +31,38 @@ created.
   it is fine", while the decision to start a new conversation turns on specific symptoms. When the window
   is not reported it says `unknown` and names what is missing, because a fabricated percentage looks like
   a measurement.
+
+### Fixed
+
+- **One-click fill asked two different routes for the same thing, and one of them could not deliver it.**
+  The prompt told the model to call `dev_env_handoff_write` and "not just print it", while the `fork` route
+  was parsing the subagent's *text* output. So the subagent did as instructed, replied "已写入", and the
+  parse found no sections — the fill reported a failure, and the write had gone nowhere near the user's
+  record. The two routes now ask for what each can actually return: `fork` returns the summary as text with
+  tools denied, `current` calls the tool because its answer cannot be read back. One writer, one channel.
+  - When the parse still fails it quotes what the subagent actually said, because "no parseable summary"
+    cannot distinguish "wrote nothing" from "wrote the wrong shape", and those need different fixes.
+- **Reading a clause rewrote its timestamp.** `normaliseRecord` stamps `updatedAt` for a write, and reading
+  went through the same function, so every record reported the moment of the query. Measured on the real
+  store: two records with different histories showed the same stamp to the second. `loadRecords` now
+  preserves the stored value, which restores index ordering and lets the timestamp answer the question it
+  exists for — whether a given fill wrote anything.
+- **`RELEASING.md` now says to measure the registry before tagging.** A release was reported as
+  unpublished while it was live, because an earlier check was carried forward as current.
+  `tools/diagnostics/check-published.mjs` does the comparison and diffs the published tarball against
+  `files[]`; run from an ordinary shell, it reports "cannot measure" rather than guessing when it cannot
+  reach npm.
+
+## [1.2.0] - 2026-10-13
+
+**This release turns the panel from an installer into something that keeps a project's state across
+conversations, and it is the release where several long-standing limits were measured rather than
+assumed.** Four new agent tools on top of the original three, a project clause keyed by project directory,
+a settings page, a manual, and a set of fixes for faults that only showed up on a real machine — a broken
+`winget`, a `MALFORMED_RESPONSE` that discarded a whole turn, and a state directory that could not be
+created.
+
+### Added
 
 - **A manual, in the settings and readable by DSH.** A page under Settings covers what the plugin does,
   how filling a gap works, how the clause works, and — most usefully — **what it cannot do here**

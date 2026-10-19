@@ -1468,19 +1468,19 @@ check('the handoff-writing tool takes its session from the tool call, not the in
 })
 
 check('the fill prompt asks for the tool call, and names DSH\'s five sections', () => {
-  // The point of one-click fill is that the model writes the record itself. A prompt that only asked for
-  // a summary would produce a nice message and save nothing, so the tool call has to be the instruction,
-  // not a suggestion.
+  // The `current` route delivers through a tool call, so the tool call has to be an instruction rather
+  // than a suggestion — a prompt that merely asked for a summary would produce a nice message and save
+  // nothing. The five section names are what keeps the result shaped like a DSH compaction summary.
+  //
+  // The field names are no longer spelled out in the prompt: the fork route returns plain text that the
+  // host parses, and the current route's tool schema already declares the fields. Asking for both a shape
+  // and a set of argument names was the source of that route's contradiction.
   for (const [lang, needles] of [
     ['zh', ['dev_env_handoff_write', '工具调用', '1. Task Overview', '2. Current State', '3. Important Discoveries', '4. Next Steps', '5. Context to Preserve']],
     ['en', ['dev_env_handoff_write', 'tool call', '1. Task Overview', '5. Context to Preserve']],
   ]) {
     const text = __test.handoffFillPrompt(lang)
     for (const needle of needles) assert(text.includes(needle), `${lang} fill prompt is missing ${needle}`)
-    // Every field the tool accepts should be named, or the model has to guess where content goes.
-    for (const field of ['summary', 'done', 'discoveries', 'todo', 'doing', 'next', 'preserve']) {
-      assert(text.includes(field), `${lang} fill prompt should name the ${field} field`)
-    }
   }
 })
 
@@ -1873,6 +1873,67 @@ check('both dictionaries carry every key, or the other language shows raw keys',
   assert(zh.length > 40 && en.length > 40, `dictionaries look too small (${zh.length}/${en.length})`)
   for (const key of zh) assert(en.includes(key), `'${key}' is in the Chinese dictionary but missing from English`)
   for (const key of en) assert(zh.includes(key), `'${key}' is in the English dictionary but missing from Chinese`)
+})
+
+check('the two fill routes ask for different things, because they deliver differently', () => {
+  // A real failure: both routes got the same prompt, which told the model to call
+  // `dev_env_handoff_write` and "not just print it". The fork route then parsed the subagent's *text*
+  // output, so the subagent did as instructed, replied "已写入", and the parse found no sections — the fill
+  // reported a failure while the write had gone somewhere else. One writer, one channel.
+  const text = __test.handoffFillPrompt('zh', { expectText: true })
+  const tool = __test.handoffFillPrompt('zh')
+  assert(text !== tool, 'the fork and current prompts must not be identical')
+  // The fork route's contract: return text, do not call tools.
+  assert(text.includes('不要调用任何工具'), 'the fork prompt must forbid tool calls')
+  assert(text.includes('<summary>'), 'the fork prompt must ask for the block the host parses')
+  assert(!text.includes('调用 `dev_env_handoff_write`'), 'the fork prompt must not ask for the write tool')
+  // The current route's contract: the answer cannot be read back, so the tool call IS the delivery.
+  assert(tool.includes('dev_env_handoff_write'), 'the current prompt must ask for the write tool')
+  assert(!tool.includes('不要调用任何工具'), 'the current prompt must not forbid tool calls')
+
+  for (const lang of ['zh', 'en']) {
+    const a = __test.handoffFillPrompt(lang, { expectText: true })
+    const b = __test.handoffFillPrompt(lang)
+    assert(a !== b, `${lang}: the two routes must differ`)
+    for (const section of ['Task Overview', 'Current State', 'Important Discoveries', 'Next Steps', 'Context to Preserve']) {
+      assert(a.includes(section) && b.includes(section), `${lang}: both prompts need ${section}`)
+    }
+  }
+
+  // The fork branch must not leave the write tool available, or the subagent can do both and the parse
+  // still sees only "已写入".
+  const index = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  const forkAt = index.indexOf("label: 'dev-env 条例填充'")
+  assert(forkAt > 0, 'the fork call should be identifiable')
+  const body = index.slice(forkAt, forkAt + 900)
+  assert(/deny:/.test(body), 'the fork route should deny tools rather than allow a write')
+  assert(!/allow:\s*\[[^\]]*dev_env_handoff_write/.test(body), 'the fork route must not allow the write tool')
+})
+
+check('reading a record does not rewrite its timestamp', () => {
+  // Measured on the real store: two records reported the same `updatedAt`, and it was the moment of the
+  // query. `normaliseRecord` stamps "now" for a write, and reading went through it too — so "last updated"
+  // always equalled "whenever you looked", index ordering was meaningless, and the timestamp could not
+  // answer the question it exists for: did that fill actually write anything?
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-stamp-'))
+  try {
+    const file = path.join(dir, 'handoffs.json')
+    const project = __test.projectKeyOf('D:\\work\\alpha', 's-1')
+    const record = __test.normaliseRecord({ summary: '写于某一刻' }, project)
+    const stamped = 1_600_000_000_000
+    record.handoff.updatedAt = stamped
+    const saved = saveRecords(file, { [project.key]: record })
+    assert(saved.ok === true, 'save should work')
+
+    const read = loadRecords(file).byProject[project.key]
+    assert(read, 'the record should come back')
+    assert(read.handoff.updatedAt === stamped, `reading must preserve the stored stamp, got ${read.handoff.updatedAt}`)
+    // A second read must not move it either — that is what made the value useless.
+    const again = loadRecords(file).byProject[project.key]
+    assert(again.handoff.updatedAt === stamped, 'a second read must not move the stamp')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ------------------------------------------------------------------ packaging
