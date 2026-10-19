@@ -1149,6 +1149,30 @@ async function probeAutoFill(ctx, sessionId) {
 }
 
 /**
+ * 设置页要**预先**标出"在这台机器上一定做不到"的候选值。
+ *
+ * 为什么在 host 判断：能不能做取决于运行时服务在不在，换一台机器、换一个 DSH 构建，同一个选项的
+ * 答案就不同。写死在页面上会变成一句谎话，而"先让人选、再在填充时拒绝"正是要消灭的那种失败。
+ *
+ * 只标**确定会失败**的。`compact` 需要 `compaction.compactNow`，没有这个服务时这条路一定报错，
+ * 所以标出并附上原因。`fork` 刻意不标：它不会失败，只是降级成 `current` 并在返回里说明——把一条
+ * 仍能用的路禁掉是另一种不准确。
+ */
+function unavailableSettings(ctx) {
+  const out = {}
+  const compaction = getService(ctx, 'compaction')
+  if (!compaction || typeof compaction.compactNow !== 'function') {
+    out['handoff.autoFillMethod'] = {
+      compact: {
+        zh: 'compaction 服务在这台机器上不可用，选它只会在填充时被拒绝，所以先禁掉。',
+        en: 'The compaction service is unavailable here, so this route could only be refused at fill time; it is disabled instead.',
+      },
+    }
+  }
+  return out
+}
+
+/**
  * 一个会话的状态测量。**工具与「状态」页签共用这一份**，所以两者不可能给出不同的数字。
  *
  * 三处真实性保证：
@@ -2501,7 +2525,10 @@ export function apply(ctx, config) {
       const file = settingsFile()
       if (method === 'GET') {
         const url = new URL(req.url || '/', 'http://localhost')
-        return sendJson(res, 200, { ok: true, settings: settingsView(file, url.searchParams.get('lang')) })
+        return sendJson(res, 200, {
+          ok: true,
+          settings: settingsView(file, url.searchParams.get('lang'), unavailableSettings(ctx)),
+        })
       }
       if (method !== 'POST') return sendJson(res, 405, { ok: false, error: 'GET / POST only' })
       const body = await readJson(req)
@@ -2511,7 +2538,7 @@ export function apply(ctx, config) {
       }
       // 保存后读回一次，让调用方看到**实际生效**的值而不是它提交的值——两者可能不同（类型不符会被
       // 回落到默认），而调用方需要知道这一点。
-      sendJson(res, 200, { ok: true, settings: settingsView(file, body.lang) })
+      sendJson(res, 200, { ok: true, settings: settingsView(file, body.lang, unavailableSettings(ctx)) })
     })
 
     return () => {

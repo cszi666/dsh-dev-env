@@ -145,9 +145,13 @@ export function saveSettings(file, settings) {
  * 设置页要显示的东西：定义 + 当前值 + 本地化文案。
  * 面板不做文案映射，所以 `label`/`why` 只回当前语言的那一条。
  */
-export function settingsView(file, lang) {
+export function settingsView(file, lang, unavailable = null) {
   const english = lang === 'en'
   const current = loadSettings(file)
+  // `unavailable` 是**运行时探测的结论**，由 host 传进来：页面无法自己知道这台机器上 compaction
+  // 服务在不在，写死在页面上的答案换一台机器就是谎话。这里只按语言投影，并丢弃不属于 SETTING_DEFS、
+  // 或不在该枚举清单里的项——路由参数和配置文件一样是外部输入。
+  const blocked = unavailable && typeof unavailable === 'object' ? unavailable : {}
   return {
     file,
     values: current,
@@ -158,17 +162,31 @@ export function settingsView(file, lang) {
     ].map((group) => ({
       id: group.id,
       label: english ? group.label.en : group.label.zh,
-      items: SETTING_DEFS.filter((def) => def.group === group.id).map((def) => ({
-        key: def.key,
-        type: def.type,
-        // enum 的候选值必须一起带出去：面板只渲染 host 给它的东西，拿不到 values 的下拉是空的
-        // ——那是一个"存在但用不了"的控件，比没有更糟。
-        values: def.values ?? null,
-        value: current[def.key],
-        default: def.default,
-        label: english ? def.label.en : def.label.zh,
-        why: english ? def.why.en : def.why.zh,
-      })),
+      items: SETTING_DEFS.filter((def) => def.group === group.id).map((def) => {
+        const decls = blocked[def.key]
+        const disabled = []
+        if (def.type === 'enum' && decls && typeof decls === 'object') {
+          for (const value of def.values) {
+            const reason = decls[value]
+            // 没有理由的"不可用"等于不给解释，宁可当作没标——用户看不懂为什么点不动。
+            if (!reason || !reason.zh || !reason.en) continue
+            disabled.push({ value, reason: english ? reason.en : reason.zh })
+          }
+        }
+        return {
+          key: def.key,
+          type: def.type,
+          // enum 的候选值必须一起带出去：面板只渲染 host 给它的东西，拿不到 values 的下拉是空的
+          // ——那是一个"存在但用不了"的控件，比没有更糟。
+          values: def.values ?? null,
+          value: current[def.key],
+          default: def.default,
+          label: english ? def.label.en : def.label.zh,
+          why: english ? def.why.en : def.why.zh,
+          // 这台机器上一定失败的候选值：页面把对应选项禁掉，而不是让用户选了才在填充时报错。
+          unavailable: disabled,
+        }
+      }),
     })),
   }
 }

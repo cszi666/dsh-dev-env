@@ -146,12 +146,12 @@ on a missing secret. Create an npm automation token, then store it as the reposi
 (Settings → Secrets and variables → Actions → New repository secret), and only then:
 
 ```powershell
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 That publishes the package through `.github/workflows/release.yml`, and gives the link at the bottom of
-`CHANGELOG.md` (`releases/tag/v1.2.0`) something to resolve to.
+`CHANGELOG.md` (`releases/tag/v1.3.0`) something to resolve to.
 
 Prefer publishing by hand? Run `npm publish --access public` first and push the tag afterwards. The
 workflow refuses to publish a version that is already on the registry, so the tag run becomes a no-op —
@@ -220,7 +220,7 @@ So the sequence for a machine that already has an older version:
 1. **Uninstall first**, so the broken generation is gone rather than racing the new one:
    `plugin_manager` with `action: remove_bundle`, or **Settings → Plugins → uninstall**.
    In a CLI-managed profile, `dsh plugin --profile <profile> remove dsh-dev-env`.
-2. **Install the new version by its exact spec** — `dsh-dev-env@1.1.2`, not the bare name.
+2. **Install the new version by its exact spec** — `dsh-dev-env@1.3.0`, not the bare name.
    Pinning makes the result checkable; the bare name leaves you guessing which generation is live.
 3. **Confirm what actually loaded** before trusting it: `npm view dsh-dev-env dist-tags`
    must show the version you intended, and `plugin_manager` `list_bundles` must show the same one. A

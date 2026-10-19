@@ -187,6 +187,7 @@ window.__ModuleLoader__.load({
       settingsIntro: '这些是默认行为。每一项都写明它会改变什么；改动保存后立即生效，不需要重启。',
       settingsSave: '保存设置',
       settingsSaved: '已保存',
+      settingsUnavailable: '这台机器上不可用：',
       methodFork: '用子智能体总结（默认，不占用本对话上下文）',
       methodCurrent: '用当前对话总结（会占用本对话上下文）',
       methodCompact: '用 DSH 压缩服务总结（会就地压缩这段对话）',
@@ -388,6 +389,7 @@ window.__ModuleLoader__.load({
       settingsIntro: 'These are defaults. Each one says what it changes; saving takes effect immediately, with no restart.',
       settingsSave: 'Save settings',
       settingsSaved: 'Saved',
+      settingsUnavailable: 'Unavailable on this machine: ',
       methodFork: 'Summarise with a subagent (default, costs no main context)',
       methodCurrent: 'Summarise in this conversation (spends this context)',
       methodCompact: 'Use DSH compaction (which rewrites this conversation)',
@@ -1651,8 +1653,12 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'dsh-de-setgroup', key: group.id },
             h('div', { className: 'dsh-de-setgrouptitle' }, group.label),
-            group.items.map((item) =>
-              h(
+            group.items.map((item) => {
+              // 当前选中的那个恰好不可用（配置文件里早就写着 `compact`）：选项一样禁用——否则用户把
+              // 它再选一次时不会遇到任何阻止——同时在下面写明它为什么不会被接受。**不禁用整个下拉**：
+              // 那会让唯一能用的几个选项也点不动。
+              const blockedCurrent = (item.unavailable || []).find((row) => row.value === item.value)
+              return h(
                 'div',
                 { className: 'dsh-de-setrow', key: item.key },
                 // enum 用下拉、布尔用复选框：把"二选一"画成勾选框会让人以为可以都不选。
@@ -1667,13 +1673,21 @@ window.__ModuleLoader__.load({
                           value: view.values[item.key],
                           onChange: (event) => set(item.key, event.target.value),
                         },
-                        (item.values || []).map((value) =>
-                          h(
+                        (item.values || []).map((value) => {
+                          // 运行时探测判定一定失败的候选值直接禁掉：一个选了才知道不行的选项，
+                          // 等于把失败推迟到最不方便的时刻。
+                          const blocked = (item.unavailable || []).find((row) => row.value === value)
+                          return h(
                             'option',
-                            { value, key: value },
+                            {
+                              value,
+                              key: value,
+                              disabled: Boolean(blocked),
+                              title: blocked ? blocked.reason : undefined,
+                            },
                             t(value === 'fork' ? 'methodFork' : value === 'compact' ? 'methodCompact' : 'methodCurrent'),
-                          ),
-                        ),
+                          )
+                        }),
                       ),
                       h('span', null, item.label),
                     )
@@ -1688,9 +1702,16 @@ window.__ModuleLoader__.load({
                       h('span', null, item.label),
                     ),
                 h('div', { className: 'dsh-de-setwhy' }, item.why),
+                blockedCurrent
+                  ? h(
+                      'div',
+                      { className: 'dsh-de-setwarn' },
+                      `${t('settingsUnavailable')}${blockedCurrent.reason}`,
+                    )
+                  : null,
                 h('div', { className: 'dsh-de-setkey' }, item.key),
-              ),
-            ),
+              )
+            }),
           ),
         ),
       )
@@ -1805,6 +1826,7 @@ window.__ModuleLoader__.load({
 .dsh-de-setrow{padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
 .dsh-de-setlabel{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
 .dsh-de-setwhy{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin-top:4px}
+.dsh-de-setwarn{font-size:12px;line-height:1.6;color:var(--dsw-alias-warning-primary, #b45309);margin-top:4px}
 .dsh-de-setkey{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.65;margin-top:3px}
 `
 

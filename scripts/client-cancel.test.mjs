@@ -305,6 +305,9 @@ export async function runClientCancelTests(harness) {
   let tree = null
   let mock = null
   let component = null
+  // The settings page lives in its own slot, so it is captured separately and rendered on its own —
+  // the panel would never show it, and "the host marks it" is not observable from the panel's tree.
+  let sectionComponent = null
   // The panel asks the optional client service `uiWorkspace` to open the real directory picker.
   // Tests install a stand-in before loading the plugin; `null` means "this DSH has no such service".
   let uiWorkspace = null
@@ -346,6 +349,14 @@ export async function runClientCancelTests(harness) {
     react.current.cursor = 0
     react.current.rerender = render
     tree = component()
+  }
+
+  /** Render the settings page into the same tree slot, so the shared assertions work unchanged. */
+  function renderSection() {
+    if (!sectionComponent) throw new Error('client.js did not register the settings section')
+    react.current.cursor = 0
+    react.current.rerender = renderSection
+    tree = sectionComponent({ standard: {} })
   }
 
   // ---------------------------------------------------------------- globals
@@ -433,6 +444,9 @@ export async function runClientCancelTests(harness) {
       inject: (_name, register) => register(),
       register: (options, value) => {
         if (options && options.name === 'main' && typeof value === 'function') component = value
+        if (options && options.name === 'settings.section' && options.id === 'dev-env' && typeof value === 'function') {
+          sectionComponent = value
+        }
         return () => undefined
       },
     }
@@ -1314,6 +1328,103 @@ export async function runClientCancelTests(harness) {
       if (deletes[0].body.dir !== 'D:\\wrong-pick') throw new Error(`deleted ${JSON.stringify(deletes[0].body.dir)}`)
       if (visibleTextOf(tree).includes('D:\\wrong-pick')) throw new Error('the removed root should be gone from the list')
       if (!visibleTextOf(tree).includes('E:\\env-root')) throw new Error('the environment root must survive')
+    })
+    /** A `/settings` payload with one boolean row and the fill-method enum, as the host sends it. */
+    const settingsPayload = (unavailable, value = 'current') => ({
+      file: 'C:/profile/dsh-dev-env/settings.json',
+      values: { 'download.preferOfficial': true, 'handoff.autoFillMethod': value },
+      defaults: { 'download.preferOfficial': true, 'handoff.autoFillMethod': 'current' },
+      groups: [
+        {
+          id: 'download',
+          label: '下载',
+          items: [
+            {
+              key: 'download.preferOfficial',
+              type: 'boolean',
+              values: null,
+              value: true,
+              default: true,
+              label: '下载优先用官方源',
+              why: '打开时优先用官方源。',
+              unavailable: [],
+            },
+          ],
+        },
+        {
+          id: 'handoff',
+          label: '交接与标签',
+          items: [
+            {
+              key: 'handoff.autoFillMethod',
+              type: 'enum',
+              values: ['fork', 'current', 'compact'],
+              value,
+              default: 'current',
+              label: '一键填充的方式',
+              why: 'current 最直接。',
+              unavailable,
+            },
+          ],
+        },
+      ],
+    })
+
+    async function bootSettings(unavailable, value = 'current') {
+      storage.set('dsh-dev-env.lang', 'zh')
+      fetchCalls.length = 0
+      pending.length = 0
+      timers.queue.clear()
+      react.current.hooks = []
+      react.current.cursor = 0
+      mock = ({ path: target }) =>
+        target.includes('/settings')
+          ? { status: 200, body: { ok: true, settings: settingsPayload(unavailable, value) } }
+          : { status: 404, body: { ok: false, error: 'no route in the test double' } }
+      renderSection()
+      await flush()
+      timers.queue.clear()
+      if (!tree) throw new Error('the settings page did not render')
+      return tree
+    }
+
+    await harness.check('the settings page disables the fill method the host proved unusable, and says why', async () => {
+      // The host measured the compaction service as absent. Offering `compact` anyway means the user
+      // finds out at fill time, which is the moment it costs most — the whole point of probing.
+      const root = await bootSettings([{ value: 'compact', reason: 'compaction 服务在这台机器上不可用' }], 'compact')
+      const select = allNodes(root).find((node) => node.type === 'select')
+      if (!select) throw new Error('the fill method should render as a select')
+      const options = (select.props.children || []).filter((node) => node && node.type === 'option')
+      const byValue = (value) => options.find((node) => node.props.value === value)
+      for (const value of ['fork', 'current', 'compact']) {
+        // Marked, not removed: the value is still a value the settings file can hold.
+        if (!byValue(value)) throw new Error(`${value} should remain listed`)
+      }
+      if (byValue('compact').props.disabled !== true) throw new Error('compact must be disabled in the picker')
+      if (byValue('fork').props.disabled === true) {
+        throw new Error('fork must stay selectable here: it degrades to current, it does not fail')
+      }
+      if (byValue('current').props.disabled === true) throw new Error('the working route must stay selectable')
+      if (!String(byValue('compact').props.title || '').includes('compaction')) {
+        throw new Error('a disabled option should carry the reason as a tooltip, not just be grey')
+      }
+      const text = visibleTextOf(tree)
+      if (!text.includes('这台机器上不可用')) throw new Error(`the reason should be visible, got: ${text.slice(0, 200)}`)
+      if (!text.includes('compaction 服务在这台机器上不可用')) throw new Error('the reason should be the host\'s own')
+    })
+
+    await harness.check('with nothing proved unusable, the settings page disables nothing', async () => {
+      const root = await bootSettings([])
+      const select = allNodes(root).find((node) => node.type === 'select')
+      const options = (select.props.children || []).filter((node) => node && node.type === 'option')
+      for (const node of options) {
+        if (node.props.disabled === true) {
+          throw new Error(`${node.props.value} should not be disabled when the host reported nothing`)
+        }
+      }
+      if (visibleTextOf(tree).includes('这台机器上不可用')) {
+        throw new Error('no warning should appear without a measurement')
+      }
     })
   } finally {
     for (const name of Object.keys(saved)) restore(name)

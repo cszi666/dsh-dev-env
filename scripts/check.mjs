@@ -1220,6 +1220,37 @@ check('an enum setting only accepts its listed values, and defaults to one that 
   }
 })
 
+check('a candidate the host proved unusable is marked, and only real candidates are marked', () => {
+  // The settings page cannot know whether this machine has a compaction service. The host probes it and
+  // hands the verdict in; the page only disables what it was told to. Hard-coding "compact is unavailable"
+  // in the page would be a claim that outlives the machine it was measured on.
+  const unavailable = {
+    'handoff.autoFillMethod': {
+      compact: { zh: '这台机器没有 compaction 服务', en: 'no compaction service on this machine' },
+      // Not in the enum, and not a setting: both are external input and must be dropped rather than
+      // rendered as an option that does not exist.
+      nope: { zh: '不应出现', en: 'should not appear' },
+    },
+    'no.such.setting': { x: { zh: '不应出现', en: 'should not appear' } },
+  }
+  const zh = settingsView(null, 'zh', unavailable)
+  const items = zh.groups.flatMap((group) => group.items)
+  const fill = items.find((row) => row.key === 'handoff.autoFillMethod')
+  assert(fill.unavailable.length === 1,
+    `only a real candidate should be marked, got ${JSON.stringify(fill.unavailable)}`)
+  assert(fill.unavailable[0].value === 'compact', 'compact should be the marked candidate')
+  assert(fill.unavailable[0].reason === '这台机器没有 compaction 服务', 'the reason should be localized')
+  // Every item carries an array, so the page can map over it without a guard per row.
+  for (const item of items) assert(Array.isArray(item.unavailable), `${item.key} should carry an unavailable list`)
+  // The value the page must keep offering: the marks describe candidates, not the current value.
+  assert(fill.values.includes('compact'), 'a marked candidate is still a candidate the page knows about')
+
+  const en = settingsView(null, 'en', unavailable)
+  const fillEn = en.groups.flatMap((group) => group.items).find((row) => row.key === 'handoff.autoFillMethod')
+  assert(fillEn.unavailable.length === 1 && fillEn.unavailable[0].reason === 'no compaction service on this machine',
+    'the English page should carry the English reason')
+})
+
 check('settings round-trip through a file, and a corrupt file falls back', () => {
   const defaults = defaultSettings()
   const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-settings-'))
@@ -1749,9 +1780,14 @@ check('the manual covers every tool, setting and known limit — and cannot sile
   const limits = MANUAL_SECTIONS.find((row) => row.id === 'limits')
   assert(limits, 'the limits section must exist')
   const limitsZh = limits.body.zh.join('\n')
-  for (const fact of ['winget', 'github', 'compaction', '启动进程', 'JSON']) {
+  for (const fact of ['winget', 'github', 'compaction', '启动进程', 'JSON', '子智能体启动入口']) {
     assert(limitsZh.includes(fact), `the limits section should state the ${fact} limitation`)
   }
+  // The fill-method default moved from `fork` to `current` (fork needs a starter this build lacks). The
+  // manual called fork the default for as long as the code had stopped doing so — a reader cannot spot
+  // that, so it is guarded by name rather than by hoping.
+  assert(!/`fork`（默认/.test(manualText('zh').text), 'the manual must not call fork the default; current is')
+  assert(!/`fork` \(default/.test(manualText('en').text), 'the English manual must not call fork the default either')
 })
 
 check('the manual text is generated from the same data the page renders', () => {

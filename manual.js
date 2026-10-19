@@ -152,14 +152,14 @@ export const MANUAL_SECTIONS = [
       zh: [
         '条例有**两栏**：左边是「需要提交的事」（目标与约束、已完成、经验与坑、下一步），右边是「任务清单」（可勾选、增删、**拖动排序**，顺序即优先级）。',
         '它按**项目目录**键控。拿不到目录时会退回按对话保存，并在界面上如实说明——**假装是项目级比退回更糟**。',
-        '**一键填充**有三种方式：`fork`（默认，起一个继承本对话上下文的子智能体，不占用主对话上下文）、`current`（用当前对话总结，会占用上下文）、`compact`（DSH 压缩服务，会**就地改写这段对话的历史**）。',
+        '**一键填充**有三种方式：`current`（默认，用当前对话总结，会占用上下文）、`fork`（起一个继承本对话上下文的子智能体，不占用主对话——**需要 DSH 暴露子智能体启动入口**，当前构建没有，选了会退回 `current` 并说明）、`compact`（DSH 压缩服务，会**就地改写这段对话的历史**；这台机器上该服务不可用，选项已禁用）。',
         '**标签由用户按按钮决定**，插件从不自己打标签；设置只决定那个选择的初始状态。',
         '条例可以**带进对话**：输入框上方的选择器手动传递，或打开 `handoff.autoInject` 让新对话自动带入（默认关）。两者都是**一条普通消息**，看得见、能撤销。',
       ],
       en: [
         'The clause has **two columns**: the left is what is or will be handed over (goal and constraints, what is done, lessons and traps, next step); the right is the task list, which can be ticked, added to, deleted from and **dragged into order** — order is priority.',
         'It is keyed by **project directory**. With no directory it falls back to per-conversation and says so in the UI — **pretending to be project-level is worse than falling back**.',
-        '**One-click fill** has three routes: `fork` (default — a subagent that inherits this conversation\'s context and spends none of the main one), `current` (summarise in this conversation, spending its context), and `compact` (DSH\'s compaction service, which **rewrites this conversation\'s history in place**).',
+        '**One-click fill** has three routes: `current` (default — summarise in this conversation, spending its context), `fork` (a subagent that inherits this conversation\'s context and spends none of the main one, but **needs DSH to expose a subagent starter**; this build does not, so choosing it falls back to `current` and says so), and `compact` (DSH\'s compaction service, which **rewrites this conversation\'s history in place**; that service is unavailable on this machine, so the option is disabled).',
         '**Tags are the user\'s decision**, pressed as a button; the plugin never adds one. The setting only sets the initial state of that choice.',
         'A clause can be **carried into a conversation**: the picker above the composer sends it by hand, or `handoff.autoInject` loads it automatically into a new conversation (off by default). Both arrive as an ordinary message — visible and revocable.',
       ],
@@ -172,7 +172,8 @@ export const MANUAL_SECTIONS = [
       zh: [
         '**winget 在这台机器上不可用**：`winget.exe` 是 0 字节的 Store 别名，执行无输出、退出码 `0x8A150001`。健康检查会因此不提供任何 winget 方案，而不是给出一个点不动的按钮。',
         '**github.com 不通**：因此 ninja、cmake、gh、allure 这些把发布挂在 GitHub 上的工具**没有**自己下载的方案。这不是"没找地址"，是那些地址在这里取不到。',
-        '**compaction 服务不可用**：所以设置里的 `compact` 方式在这台机器上跑不通，界面会退回手动方式并说明。',
+        '**compaction 服务不可用**：所以设置里的 `compact` 方式在这台机器上跑不通，设置页把它禁掉并写明原因，而不是让你选了才在填充时被拒绝。',
+        '**子智能体填充在这台构建上做不到**：探针能列出两个子智能体 provider（`spawn` 与 `fork`），但服务只暴露 `list` / `getProvider` / `prompt` / `sendMessage`，没有 `start` / `startContinuable`。选"用子智能体总结"会退回"用当前对话总结"并在返回里说明——**不会假装写了**。要恢复这条路需要 DSH 先暴露**子智能体启动入口**（`start` / `startContinuable`），插件无法单方面解决。',
         '**面板不能自己启动进程**：面板是浏览器代码。要"启动工具"必须走 host 路由，而一条接受页面传来命令的路由等于**以用户身份任意执行代码**。目前没有这条路由，这是有意为之。',
         '**交接的解析是文本解析，不是 JSON**：上一版让模型拼 JSON，一个转义过度的 Windows 路径就让整轮 `MALFORMED_RESPONSE`，连带同轮成功的写入一起作废。现在改由宿主解析纯文本，那个失败模式被消除而非缓解。',
         '**诊断脚本留在 `tools/diagnostics/`**：它们记录的是真机测量结果（镜像可达性、winget 包 id、324 条注册表卸载项快照），不是运行时代码，也不参与发布。',
@@ -180,7 +181,8 @@ export const MANUAL_SECTIONS = [
       en: [
         '**winget is unusable on this machine**: `winget.exe` is a 0-byte Store alias that prints nothing and exits `0x8A150001`. The health check therefore offers no winget route instead of a button that cannot work.',
         '**github.com is unreachable**: so ninja, cmake, gh and allure — which publish through GitHub — have **no** own-download route. That is not a missing address; those addresses cannot be fetched here.',
-        '**The compaction service is unavailable**: so the `compact` fill route cannot work on this machine, and the interface falls back and says so.',
+        '**The compaction service is unavailable**: so the `compact` fill route cannot work on this machine; the settings page disables the option and says why, rather than letting you pick it and be refused at fill time.',
+        '**Subagent fill cannot work on this build**: the probe lists two subagent providers (`spawn` and `fork`), but the service exposes only `list`, `getProvider`, `prompt` and `sendMessage` — no `start` / `startContinuable`. Choosing "summarise with a subagent" falls back to "summarise in this conversation" and says so in the response; it never pretends to have written the clause. Restoring the route needs DSH to expose a starter first; a plugin cannot solve it alone.',
         '**The panel cannot start processes itself**: it is browser code. Launching a tool must be a host route, and a route that accepts a command from the page is **arbitrary code execution as the user**. No such route exists, on purpose.',
         '**Clause parsing is text parsing, not JSON**: the previous version had the model build JSON, and one over-escaped Windows path ended a whole turn with `MALFORMED_RESPONSE`, discarding the successful writes that shared it. The host parses plain text now, which removes that failure mode rather than mitigating it.',
         '**Diagnostic scripts live in `tools/diagnostics/`**: they record real measurements (mirror reachability, winget package ids, a 324-entry registry uninstall snapshot). They are not runtime code and are not published.',
