@@ -34,6 +34,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The fork fill refused with "子智能体服务不可用" while the capability probe listed two providers.** Measured
+  on the live host: the registry answered `list()` and `getProvider()` but had no `start`, so the route's
+  single `typeof start` check produced a bare refusal — which reads as "this environment cannot do it". It
+  now falls back to starting through the provider implementation, and the capability report lists which
+  subagent methods exist, so a refusal names the missing member instead of the wrong cause.
+- **A 清空 (Clear) button on the clause, behind a confirmation.** Requested as a guaranteed way to start the
+  clause over. It empties the goal, results, lessons, next step and every task, and keeps the project
+  identity and the user's tags — losing the project key would silently orphan the record, so the next fill
+  would write a second one under a different key. The confirmation is a modal rather than `window.confirm`,
+  and it states what is kept, because clearing is the action people are most anxious about.
+
 - **One-click fill asked two different routes for the same thing, and one of them could not deliver it.**
   The prompt told the model to call `dev_env_handoff_write` and "not just print it", while the `fork` route
   was parsing the subagent's *text* output. So the subagent did as instructed, replied "已写入", and the

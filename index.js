@@ -1110,6 +1110,13 @@ async function probeAutoFill(ctx, sessionId) {
   // 让它写交接只会编出一个空壳。所以这里如实报告每个 provider 的能力，而不是假定。
   report.subagentProviders = []
   const subagents = getService(ctx, 'subagents')
+  // **把方法可用性也报出来**：出现过"能列出 provider，却报 start 不可用"的情况——
+  // 只看 canSubagentFill 会让人以为是环境不支持，而真正缺的只是某个具体方法。
+  report.subagentMethods = subagents
+    ? ['list', 'getProvider', 'start', 'startContinuable', 'prompt', 'sendMessage'].filter(
+        (name) => typeof subagents[name] === 'function',
+      )
+    : []
   if (subagents && typeof subagents.list === 'function' && typeof subagents.getProvider === 'function') {
     try {
       for (const name of subagents.list()) {
@@ -2217,8 +2224,11 @@ export function apply(ctx, config) {
       if (method === 'fork') {
         const agents = getService(scope || ctx, 'agents')
         const subagents = getService(scope || ctx, 'subagents')
-        if (!subagents || typeof subagents.start !== 'function') {
-          return sendJson(res, 503, { ok: false, error: '子智能体服务不可用' })
+        if (!subagents) {
+          return sendJson(res, 503, {
+            ok: false,
+            error: '当前环境没有 subagents 服务，无法用子智能体总结。可以改用「用当前对话总结」。',
+          })
         }
         const parent = agents && typeof agents.get === 'function' ? agents.get(sessionId) : undefined
         if (!parent) {
@@ -2231,7 +2241,7 @@ export function apply(ctx, config) {
         const provider = capability.subagentProviders.find((row) => row.inheritsParentContext)
         const abort = new AbortController()
         try {
-          const run = await subagents.start(provider.name, {
+          const request = {
             label: 'dev-env 条例填充',
             // `expectText`：这条路上子智能体**返回文本**，宿主负责写入。提示词与工具过滤必须与之一致，
             // 否则子智能体照另一条路的指示去调用工具、只回一句"已写入"，而宿主在等文本——解析失败。
@@ -2242,7 +2252,24 @@ export function apply(ctx, config) {
             toolFilter: {
               deny: ['dev_env_handoff_write', 'dev_env_tasks', 'write', 'edit', 'bash', 'terminal_open', 'terminal_signal'],
             },
-          })
+          }
+          // 先走注册表；注册表没有 `start` 时退回**直接向 provider 启动**——两者最终都是同一个
+          // `SubagentRun`，只是入口不同。这样“某个构建只暴露 getProvider”也不会让这条路彻底断掉。
+          let run
+          if (typeof subagents.start === 'function') {
+            run = await subagents.start(provider.name, request)
+          } else {
+            const impl = subagents.getProvider(provider.name)
+            if (!impl || typeof impl.start !== 'function') {
+              return sendJson(res, 503, {
+                ok: false,
+                error: `provider ${provider.name} 上没有 start()，无法启动子智能体。可以改用「用当前对话总结」。`,
+              })
+            }
+            run = await impl.start(
+              Object.assign({}, request, { descriptor: { mode: 'continuable', label: 'dev-env 条例填充' } }),
+            )
+          }
           try {
             const result = await run.result
             const text = (result.output || [])
@@ -2410,6 +2437,36 @@ export function apply(ctx, config) {
       if (!measured.ok) return sendJson(res, 503, measured)
       // 页面需要档位文案与清单全文，工具用不到那部分，所以在这里补上而不是塞进工具输出。
       sendJson(res, 200, { ok: true, state: Object.assign({}, measured, { bands: PRESSURE_BANDS, checklist: SYMPTOMS }) })
+    })
+
+    // 清空条例内容。**为"填充写不进去"提供一条确定可用的出路**：先清空再填充，比猜"旧内容占住了"
+    // 更可靠——写入路径本来就是"构造新记录再保存"，旧内容不参与判定，但用户需要这个能力时应该给。
+    //
+    // 刻意**只清内容、保留项目身份与标签**：清空是为了重写，不是为了丢掉"这份记录属于哪个项目"。
+    register('/dsh-dev-env/api/handoff/clear', async (req, res) => {
+      if ((req.method || 'GET').toUpperCase() !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' })
+      const body = await readJson(req)
+      const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
+      const projectKey = typeof body.projectKey === 'string' ? body.projectKey.trim() : ''
+      if (!sessionId && !projectKey) return sendJson(res, 400, { ok: false, error: '缺少 sessionId 或 projectKey' })
+      const file = handoffsFile()
+      const { byProject } = loadRecords(file)
+      const project = projectKey
+        ? { key: projectKey, path: null, scope: 'explicit' }
+        : await projectForSession(scope || ctx, sessionId)
+      const previous = byProject[project.key]
+      if (!previous) return sendJson(res, 404, { ok: false, error: `这个项目还没有条例：${project.key}` })
+
+      // 保留身份与标签，清掉内容与任务——`emptyRecord` 正是"空记录"的定义，用它避免第二份清空逻辑。
+      const cleared = emptyRecord(project)
+      cleared.tags = previous.tags
+      cleared.lastSessionId = sessionId || previous.lastSessionId
+      // 记下清空时间：之后再看这条记录，能知道"它被清过"，而不是以为内容丢错了。
+      cleared.handoff.updatedAt = Date.now()
+      byProject[project.key] = cleared
+      const written = saveRecords(file, byProject)
+      if (!written.ok) return sendJson(res, 500, { ok: false, error: written.error })
+      return sendJson(res, 200, { ok: true, project, record: cleared, keptTags: cleared.tags })
     })
 
     // 用户设置：读取与保存。设置页（settings.section）用它渲染，其余功能用它决定默认行为。

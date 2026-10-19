@@ -195,6 +195,11 @@ window.__ModuleLoader__.load({
       fromOwnDownload: '自己下载',
       extResumed: '已续传',
       clauseReorder: '拖动可调顺序',
+      clearClause: '清空条例',
+      clearConfirmTitle: '清空这份条例？',
+      clearConfirmBody: '会把目标、已完成、经验、下一步和全部任务清空——**不能撤销**。项目身份与你打的标签会保留，所以清空后重新填充仍写回同一个项目。如果只是填充失败，也可以先试「用当前对话总结」。',
+      clearConfirmGo: '确认清空',
+      clearConfirmCancel: '不清空',
       stateTab: '状态',
       stateIntro: '这个对话还有多少余量——数字是实测的，清单是给你自己判断的。',
       stateUnknown: '无法确定',
@@ -350,6 +355,11 @@ window.__ModuleLoader__.load({
       stateChecklistWarn: 'Two or more: update the project clause now, then move to a new conversation.',
       stateLimitNote: 'Note: this cannot measure whether the model is tired — there is no channel for that. It measures context saturation, which is the real cause of answers getting worse as a conversation grows.',
       clauseReorder: 'drag to reorder',
+      clearClause: 'Clear clause',
+      clearConfirmTitle: 'Clear this clause?',
+      clearConfirmBody: 'This empties the goal, what is done, the lessons, the next step and every task — **it cannot be undone**. The project identity and your tags are kept, so a later fill still writes to the same project. If the fill is what failed, try "summarise in this conversation" first.',
+      clearConfirmGo: 'Clear it',
+      clearConfirmCancel: 'Keep it',
       manualTools: 'Tools DSH can call',
       manualSettings: 'Settings at a glance',
       clauseDock: 'Project clause',
@@ -689,6 +699,8 @@ window.__ModuleLoader__.load({
       const [filled, setFilled] = React.useState(false)
       // 标签选择：{ open, picked }。用户按按钮决定，插件从不自己打标签。
       const [tagChoice, setTagChoice] = React.useState(null)
+      // 清空确认：**必须显式确认**。这是条例页签里唯一会删内容的动作，误点一次就丢了整份记录。
+      const [confirmClear, setConfirmClear] = React.useState(false)
       // 设置（只读）：一键填充的方式、标签默认是否全选。
       const [settings, setSettings] = React.useState(null)
 
@@ -876,6 +888,24 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 清空条例内容（保留项目身份与标签）。带确认，见 confirmClear。 */
+      const clearClause = async () => {
+        setConfirmClear(false)
+        try {
+          const payload = await api('/handoff/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, projectKey: project && project.key }),
+          })
+          setProject(payload.project || project)
+          setRecord(payload.record || record)
+          setSaved(false)
+          setFilled(false)
+        } catch (err) {
+          setError(String((err && err.message) || err))
+        }
+      }
+
       const textField = (key, label, rows) =>
         h(
           'div',
@@ -917,6 +947,7 @@ window.__ModuleLoader__.load({
           sent ? h('span', { className: 'dsh-de-ok' }, `${t('handoffSent')} → ${sent}`) : null,
           h('span', { className: 'dsh-de-spacer' }),
           h('button', { className: 'dsh-de-btn', onClick: fill, disabled: filling }, filling ? t('filling') : t('fillNow')),
+          h('button', { className: 'dsh-de-btn danger', onClick: () => setConfirmClear(true) }, t('clearClause')),
           h('button', { className: 'dsh-de-btn', onClick: openTags }, t('tagButton')),
           h('button', { className: 'dsh-de-btn', onClick: save }, t('handoffSave')),
         ),
@@ -1006,6 +1037,26 @@ window.__ModuleLoader__.load({
                   { className: 'dsh-de-pick' },
                   h('button', { className: 'dsh-de-btn', onClick: saveTags }, t('tagConfirm')),
                   h('button', { className: 'dsh-de-btn', onClick: () => setTagChoice(null) }, t('pickSourceCancel')),
+                ),
+              ),
+            )
+          : null,
+        // 清空确认。用模态而不是 window.confirm：后者会阻塞渲染线程，而且在嵌入式 webview 里
+        // 表现不一致。文案里写清**保留什么**（项目身份与标签），因为"清空"最容易让人担心这一层。
+        confirmClear
+          ? h(
+              'div',
+              { className: 'dsh-de-modal' },
+              h(
+                'div',
+                { className: 'dsh-de-dialog' },
+                h('h2', null, t('clearConfirmTitle')),
+                h('div', { className: 'dsh-de-pickq' }, t('clearConfirmBody')),
+                h(
+                  'div',
+                  { className: 'dsh-de-pick' },
+                  h('button', { className: 'dsh-de-btn danger', onClick: clearClause }, t('clearConfirmGo')),
+                  h('button', { className: 'dsh-de-btn', onClick: () => setConfirmClear(false) }, t('clearConfirmCancel')),
                 ),
               ),
             )

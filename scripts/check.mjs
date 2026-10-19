@@ -1936,6 +1936,54 @@ check('reading a record does not rewrite its timestamp', () => {
   }
 })
 
+check('clearing a clause keeps its identity and its tags', () => {
+  // "Clear" exists so a user has a guaranteed way to start the clause over. What it must not lose is the
+  // two things that are not content: which project the record belongs to, and the tags the user chose.
+  // Losing the project key would silently orphan the record — the next fill would create a second one.
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-clear-'))
+  try {
+    const file = path.join(dir, 'handoffs.json')
+    const project = __test.projectKeyOf('D:\\work\\alpha', 's-1')
+    const record = __test.normaliseRecord(
+      { summary: '要做的事', todo: [{ id: 't1', text: '一件' }], done: ['已完成一件'], tags: ['continuation', 'reusable'] },
+      project,
+    )
+    assert(saveRecords(file, { [project.key]: record }).ok, 'setup save should work')
+
+    // Same construction the route uses: an empty record, then identity and tags restored.
+    const cleared = __test.emptyRecord(project)
+    const previous = loadRecords(file).byProject[project.key]
+    cleared.tags = previous.tags
+    cleared.handoff.updatedAt = Date.now()
+    assert(saveRecords(file, { [project.key]: cleared }).ok, 'clearing should save')
+
+    const after = loadRecords(file).byProject[project.key]
+    assert(after, 'the record must still exist under the same project key')
+    assert(after.projectKey === project.key, 'the project identity must survive a clear')
+    assert(after.tags.length === 2, `tags must survive, got ${JSON.stringify(after.tags)}`)
+    assert(isHandoffEmpty(after.handoff), 'the content must be empty')
+    assert(after.handoff.todo.length === 0 && after.handoff.done.length === 0, 'tasks and results must be gone')
+    assert(typeof after.handoff.updatedAt === 'number', 'a clear records when it happened')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('the fork route reports what is missing instead of a vague refusal', () => {
+  // Measured on the live host: the fill returned 503 "子智能体服务不可用" while the capability probe listed
+  // two providers — because the registry lacked `start` but had `list` and `getProvider`. A refusal that
+  // does not name the missing member sends the reader to the wrong conclusion, so the probe now reports
+  // which subagent methods exist and the route falls back to the provider instead of refusing.
+  const index = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  assert(/subagentMethods/.test(index), 'the capability probe should report which subagent methods exist')
+  const at = index.indexOf("label: 'dev-env 条例填充'")
+  assert(at > 0, 'the fork call should be identifiable')
+  const body = index.slice(at - 2500, at + 2500)
+  assert(/typeof subagents\.start === 'function'/.test(body), 'the route should branch on whether start exists')
+  assert(/impl\.start/.test(body), 'the route should fall back to the provider implementation')
+  assert(/descriptor: \{ mode: 'continuable'/.test(body), 'the provider fallback needs a resolved descriptor')
+})
+
 // ------------------------------------------------------------------ packaging
 console.log('\npackage wiring')
 
