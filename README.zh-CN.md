@@ -124,15 +124,15 @@ dsh: warning: 1 entry did not activate dev-env (@cszi666/dsh-dev-env): failed to
 在会话里粘贴：
 
 ```
-我已经装过旧版的 @cszi666/dsh-dev-env，现在要升级到 dsh-dev-env@1.2.0。
+我已经装过旧版的 @cszi666/dsh-dev-env，现在要升级到 dsh-dev-env@1.3.0。
 
 请按顺序执行，不要跳步：
 1. 先用 plugin_manager 的 list_bundles 告诉我当前装的**包名**和版本。
 2. 用 remove_bundle 先卸载旧的那个。不要直接覆盖安装：DSH 会保留旧 bundle 行，
    新一代加载失败时报 "1 entry did not activate dev-env: failed to import"，
    那看起来像整个应用坏了。
-3. 用 install_bundle 安装 dsh-dev-env@1.2.0——版本写死，便于核对。
-4. 再用 list_bundles 确认装上的就是 dsh-dev-env@1.2.0，并报告 application 状态。
+3. 用 install_bundle 安装 dsh-dev-env@1.3.0——版本写死，便于核对。
+4. 再用 list_bundles 确认装上的就是 dsh-dev-env@1.3.0，并报告 application 状态。
 5. 如果有 restart-required 就告诉我，不要自己重启客户端。
 ```
 

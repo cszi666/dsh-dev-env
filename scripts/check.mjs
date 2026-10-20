@@ -2084,6 +2084,21 @@ check('docs/RELEASING.md tracks the current version', () => {
   assert(releasing.includes(`v${pkg.version}`), `docs/RELEASING.md should mention v${pkg.version}`)
 })
 
+check('the copy-paste install prompts pin the version that is actually current', () => {
+  // Both READMEs carry a prompt a user pastes into a session, and it names a pinned spec. That pin is
+  // trusted verbatim, so a stale one installs the previous release while looking deliberate — it read
+  // 1.2.0 after 1.3.0 shipped. RELEASING.md had a version guard; the prompts a user actually copies did
+  // not, which is the wrong way round.
+  for (const doc of ['README.md', 'README.zh-CN.md']) {
+    const text = readFileSync(path.join(ROOT, doc), 'utf8')
+    const pins = [...text.matchAll(new RegExp(`${pkg.name}@(\\d+\\.\\d+\\.\\d+)`, 'g'))].map((match) => match[1])
+    assert(pins.length > 0, `${doc} should show a pinned install spec`)
+    for (const pin of pins) {
+      assert(pin === pkg.version, `${doc} pins ${pkg.name}@${pin}, but the current version is ${pkg.version}`)
+    }
+  }
+})
+
 check('bundle patch exists and inserts this package row', () => {
   const patchPath = pkg.dsh?.bundle?.patch
   assert(typeof patchPath === 'string', 'dsh.bundle.patch is missing')
