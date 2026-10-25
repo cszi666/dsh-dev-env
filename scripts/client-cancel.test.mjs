@@ -1512,6 +1512,45 @@ export async function runClientCancelTests(harness) {
       }
     })
 
+    await harness.check('a failed install says it was the install, not the scan', async () => {
+      // Every failure used to be labelled "扫描失败", so an install that winget refused sent the user to
+      // look at the scan — which had just succeeded. The label has to name what actually failed.
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        job: { itemId: 'other', name: 'Other' },
+        postRoutes: { '/install': () => ({ status: 500, body: { ok: false, error: 'winget 拒绝执行' } }) },
+      })
+      clickButton(root, '一键补齐')
+      await flush()
+      const text = visibleTextOf(tree)
+      if (!text.includes('操作失败')) throw new Error(`an install failure should not blame the scan: ${text.slice(0, 220)}`)
+      if (text.includes('扫描失败')) throw new Error('the scan did not fail; only the install did')
+      if (!text.includes('winget 拒绝执行')) throw new Error('the reason should be shown, not swallowed')
+      // Dismissable: before, the line stayed until the next successful scan, which could be much later.
+      clickButton(tree, '关闭')
+      await flush()
+      if (visibleTextOf(tree).includes('winget 拒绝执行')) throw new Error('the message should be dismissable')
+    })
+
+    await harness.check('asking DSH to explain does not pretend an install is running', async () => {
+      // `explainByDsh` shared the install lock, so the same row's install button switched to "安装中…"
+      // while nothing was being installed — and stayed disabled for the duration of a chat request.
+      const item = Object.assign({}, INVENTORY.items[0], { desc: 'GCC 是编译器' })
+      const root = await boot(() => ({ status: 200, body: { ok: true, jobs: [] } }), {
+        inventory: inventoryWith(item),
+        job: { itemId: 'other', name: 'Other' },
+        postRoutes: { '/explain': () => ({ status: 200, body: { ok: true } }) },
+      })
+      clickButton(root, '↗ 了解')
+      clickButton(tree, '让 DSH 讲解')
+      // press() drains the render queue but not the request, so this is the in-flight state.
+      const asking = buttonByText(tree, '讲解中…')
+      if (!asking) throw new Error(`the explain button should show its own progress (buttons: ${buttonLabels(tree).join(' / ')})`)
+      if (asking.props.disabled !== true) throw new Error('the explain button should lock while it works')
+      if (buttonByText(tree, '安装中…')) throw new Error('explaining must not look like installing')
+      await flush()
+      if (buttonByText(tree, '讲解中…')) throw new Error('the in-flight label must not stick')
+    })
+
     // ------------------------------------------------------------ project clause tab
     // Everything below was added after 1.2.0 and had no client-side coverage at all: the whole clause and
     // state surface was verified only by hand, and by host-side unit tests that cannot see the DOM.

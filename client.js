@@ -56,6 +56,9 @@ window.__ModuleLoader__.load({
       versionUnknown: '版本未知',
       notInstalled: '未安装',
       scanFailed: '扫描失败',
+      actionFailed: '操作失败',
+      dismiss: '关闭',
+      explaining: '讲解中…',
       retry: '重试',
       loading: '正在读取环境…',
       essentialBadge: '必备',
@@ -242,6 +245,9 @@ window.__ModuleLoader__.load({
       versionUnknown: 'version unknown',
       notInstalled: 'Not installed',
       scanFailed: 'Scan failed',
+      actionFailed: 'That did not work',
+      dismiss: 'Dismiss',
+      explaining: 'Asking DSH…',
       retry: 'Retry',
       loading: 'Reading environment…',
       essentialBadge: 'essential',
@@ -1946,9 +1952,23 @@ window.__ModuleLoader__.load({
     function DevEnvPage() {
       const [data, setData] = React.useState(null)
       const [jobs, setJobs] = React.useState([])
-      const [error, setError] = React.useState(null)
+      // 错误的**来源**要和错误本身分开：此前所有失败都冠以「扫描失败」，于是装包失败、取消失败、
+      // 卸载失败、选目录失败全被说成扫描出错——用户会去查一个根本没坏的东西。现在按来源给标题，
+      // 并且可以关掉（它原来只在下次加载成功时才消失，那可能很久以后）。
+      const [panelError, setPanelError] = React.useState(null)
+      const [errorScope, setErrorScope] = React.useState('action')
+      const setError = (value) => {
+        if (value != null) setErrorScope('action')
+        setPanelError(value)
+      }
+      const setScanError = (value) => {
+        setErrorScope('scan')
+        setPanelError(value)
+      }
       const [loading, setLoading] = React.useState(true)
       const [busy, setBusy] = React.useState(null)
+      // 「让 DSH 讲解」不是安装：借用 busy 会让同一行的安装按钮显示「安装中…」，而什么都没在装。
+      const [explaining, setExplaining] = React.useState(null)
       const [tab, setTab] = React.useState('missing')
       const [category, setCategory] = React.useState('')
       const [copied, setCopied] = React.useState(null)
@@ -1993,9 +2013,9 @@ window.__ModuleLoader__.load({
           ])
           setData(payload)
           if (rootsPayload) setRoots(rootsPayload.roots || [])
-          setError(null)
+          setPanelError(null)
         } catch (err) {
-          setError(String((err && err.message) || err))
+          setScanError(String((err && err.message) || err))
         } finally {
           setLoading(false)
         }
@@ -2131,20 +2151,21 @@ window.__ModuleLoader__.load({
       }
 
       const explainByDsh = async (item) => {
-        setAsk(null)
-        setBusy(item.id)
+        // 不在这里关掉那一行：请求进行中要看得见「讲解中…」，否则点下去的唯一变化是面板消失了。
+        setExplaining(item.id)
         try {
           await api('/explain', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: item.id, lang: currentLang }),
           })
+          setAsk(null)
           setNotice({ itemId: item.id, text: t('explainSent') })
           setTimeout(() => setNotice((current) => (current && current.itemId === item.id ? null : current)), 4000)
         } catch (err) {
           setError(String((err && err.message) || err))
         } finally {
-          setBusy(null)
+          setExplaining(null)
         }
       }
 
@@ -2557,7 +2578,14 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'dsh-de-scroll' },
-          error ? h('div', { className: 'dsh-de-err' }, `${t('scanFailed')}：${error}`) : null,
+          panelError
+          ? h(
+              'div',
+              { className: 'dsh-de-err', role: 'alert' },
+              `${t(errorScope === 'scan' ? 'scanFailed' : 'actionFailed')}：${panelError}`,
+              h('button', { className: 'dsh-de-btn ghost', onClick: () => setPanelError(null) }, t('dismiss')),
+            )
+          : null,
           !data && loading ? h('div', { className: 'dsh-de-msg' }, t('loading')) : null,
           data
             ? h(
@@ -2589,7 +2617,7 @@ window.__ModuleLoader__.load({
                 ),
               )
             : null,
-          data && !groups.length && !error ? h('div', { className: 'dsh-de-empty' }, t('empty')) : null,
+          data && !groups.length && !panelError ? h('div', { className: 'dsh-de-empty' }, t('empty')) : null,
           // 额外根目录区块：列出现在实际在搜的目录，手动添加的那条可以单独撤销。
           // 来自环境变量的一条**没有**移除按钮——面板删不掉它，给一个按了没反应的按钮不如说清楚。
           h(
@@ -2756,7 +2784,15 @@ window.__ModuleLoader__.load({
                         'div',
                         { className: 'dsh-de-ask' },
                         h('span', { className: 'dsh-de-askq' }, t('askDsh')),
-                        h('button', { className: 'dsh-de-btn primary', onClick: () => explainByDsh(item) }, t('explainByDsh')),
+                        h(
+                          'button',
+                          {
+                            className: 'dsh-de-btn primary',
+                            disabled: explaining === item.id,
+                            onClick: () => explainByDsh(item),
+                          },
+                          explaining === item.id ? t('explaining') : t('explainByDsh'),
+                        ),
                         h(
                           'button',
                           {
