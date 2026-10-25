@@ -299,6 +299,7 @@ export async function runClientCancelTests(harness) {
 
   // ---------------------------------------------------------------- harness
   const react = createShim()
+  const SESSION_ID = 's-test-1'
   const storage = new Map()
   const fetchCalls = []
   const pending = []
@@ -308,6 +309,10 @@ export async function runClientCancelTests(harness) {
   // The settings page lives in its own slot, so it is captured separately and rendered on its own —
   // the panel would never show it, and "the host marks it" is not observable from the panel's tree.
   let sectionComponent = null
+  // Tab and dock components, keyed by their slot id: dev-env-handoff (项目条例), dev-env-state (状态),
+  // dev-env-clause (the picker above the composer), dev-env-manual (the manual page).
+  const views = {}
+  let viewProps = { standard: { sessionId: SESSION_ID } }
   // The panel asks the optional client service `uiWorkspace` to open the real directory picker.
   // Tests install a stand-in before loading the plugin; `null` means "this DSH has no such service".
   let uiWorkspace = null
@@ -343,12 +348,33 @@ export async function runClientCancelTests(harness) {
     await drain()
   }
 
+  /**
+   * Expand function components in place.
+   *
+   * The shim renders only the component it is handed; a nested function component (the clause columns, each
+   * task list) would stay as an uninvoked element, so its text and buttons were invisible to every query.
+   * Real React invokes them during reconciliation, and this does the same thing in tree order — which also
+   * keeps the hook cursor deterministic, because the expansion order never changes between renders.
+   *
+   * The depth cap turns "a component returns itself" into a visible failure instead of a hang.
+   */
+  const expandTree = (node, depth = 0) => {
+    if (depth > 40) throw new Error('component expansion recursed too far (a component is returning itself?)')
+    if (node === null || node === undefined || typeof node !== 'object') return node
+    if (Array.isArray(node)) return node.map((child) => expandTree(child, depth + 1))
+    if (typeof node.type === 'function') return expandTree(node.type(node.props || {}), depth + 1)
+    if (!node.props) return node
+    const children = node.props.children
+    if (children === undefined) return node
+    return Object.assign({}, node, { props: Object.assign({}, node.props, { children: expandTree(children, depth + 1) }) })
+  }
+
   function render() {
     // Only the read cursor resets per render. Clearing the slots array would recreate every useState
     // slot from its initial value and re-register every effect — that is a remount, not a re-render.
     react.current.cursor = 0
     react.current.rerender = render
-    tree = component()
+    tree = expandTree(component())
   }
 
   /** Render the settings page into the same tree slot, so the shared assertions work unchanged. */
@@ -356,8 +382,61 @@ export async function runClientCancelTests(harness) {
     if (!sectionComponent) throw new Error('client.js did not register the settings section')
     react.current.cursor = 0
     react.current.rerender = renderSection
-    tree = sectionComponent({ standard: {} })
+    tree = expandTree(sectionComponent({ standard: {} }))
   }
+
+  /**
+   * Render one of the conversation-slot components into the tree slot.
+   *
+   * These live outside the panel: `DevEnvHandoffView` and `DevEnvStateView` are `conversation.view`
+   * occupants, and `DevEnvClauseDock` is `conversation.input.dock`. Nothing about them was observable from
+   * the panel's tree, which is why the whole clause/state surface shipped with unit tests on the host side
+   * and none on the client side.
+   */
+  function renderView(id) {
+    const render = () => {
+      if (!views[id]) throw new Error(`client.js did not register the ${id} view (registered: ${Object.keys(views).join(', ') || 'none'})`)
+      react.current.cursor = 0
+      react.current.rerender = render
+      tree = expandTree(views[id](viewProps))
+    }
+    render()
+  }
+
+  /** Mount a conversation-slot component with its own routes, then let every request resolve. */
+  async function mountView(id, routes = {}, props = {}) {
+    storage.set('dsh-dev-env.lang', 'zh')
+    fetchCalls.length = 0
+    pending.length = 0
+    timers.queue.clear()
+    timers.now = 1_700_000_000_000
+    react.current.hooks = []
+    react.current.cursor = 0
+    viewProps = Object.assign({ standard: { sessionId: SESSION_ID } }, props)
+    mock = ({ path: target, method, body }) => {
+      // Longest suffix wins, the way a real router would: `/handoff` must not swallow `/handoff/fill` just
+      // because it was written first. Insertion order made these tests depend on the order of a literal.
+      const entries = Object.entries(routes).sort((a, b) => b[0].length - a[0].length)
+      for (const [suffix, answer] of entries) {
+        if (target.includes(suffix)) return typeof answer === 'function' ? answer({ path: target, method, body }) : answer
+      }
+      // Settings are read by the clause tab to decide the fill method and tag defaults.
+      if (target.includes('/settings')) return { status: 200, body: { ok: true, settings: { values: {} } } }
+      return { status: 404, body: { ok: false, error: 'no route in the test double' } }
+    }
+    renderView(id)
+    await flush()
+    return () => renderView(id)
+  }
+
+  /** Set an input's value the way React would: call its onChange, then let the update land. */
+  const setValue = (node, value) => {
+    const handler = node.props && node.props.onChange
+    if (typeof handler !== 'function') throw new Error('input has no onChange handler')
+    handler({ target: { value } })
+  }
+  const inputByPlaceholder = (root, placeholder) =>
+    allNodes(root).find((node) => node.props && node.props.placeholder === placeholder)
 
   // ---------------------------------------------------------------- globals
   const saved = {
@@ -446,6 +525,12 @@ export async function runClientCancelTests(harness) {
         if (options && options.name === 'main' && typeof value === 'function') component = value
         if (options && options.name === 'settings.section' && options.id === 'dev-env' && typeof value === 'function') {
           sectionComponent = value
+        }
+        // The tab/dock components are registered into conversation slots. They are captured too, because
+        // everything added after 1.2.0 lives there and none of it was observable from the panel tree —
+        // that is the gap these cases close.
+        if (typeof value === 'function' && options && options.id) {
+          views[options.id] = value
         }
         return () => undefined
       },
@@ -1426,6 +1511,276 @@ export async function runClientCancelTests(harness) {
         throw new Error('no warning should appear without a measurement')
       }
     })
+
+    // ------------------------------------------------------------ project clause tab
+    // Everything below was added after 1.2.0 and had no client-side coverage at all: the whole clause and
+    // state surface was verified only by hand, and by host-side unit tests that cannot see the DOM.
+
+    const clauseRecord = (over = {}) => ({
+      projectKey: 'dir:c:\\work\\alpha',
+      projectPath: 'C:\\work\\alpha',
+      projectScope: 'project',
+      tags: ['continuation'],
+      lastSessionId: SESSION_ID,
+      handoff: Object.assign(
+        {
+          summary: '把条例做完',
+          todo: [
+            { id: 't1', text: '写测试', done: false, tag: null },
+            { id: 't2', text: '拖动排序', done: true, tag: null },
+          ],
+          doing: [],
+          done: ['存储改造'],
+          next: '跑测试',
+          notes: '经验一条',
+        },
+        over,
+      ),
+    })
+    const clauseRoutes = (record, extra = {}) =>
+      Object.assign(
+        {
+          '/handoff/clear': { status: 200, body: { ok: true, project: { key: record.projectKey, path: record.projectPath }, record: clauseRecord({ todo: [], done: [], summary: '', notes: '', next: '' }) } },
+          '/handoff': {
+            status: 200,
+            body: { ok: true, project: { key: record.projectKey, path: record.projectPath, scope: 'project' }, record },
+          },
+        },
+        extra,
+      )
+
+    await harness.check('the clause tab shows the project, both columns, and its tasks', async () => {
+      const record = clauseRecord()
+      await mountView('dev-env-handoff', clauseRoutes(record))
+      const text = visibleTextOf(tree)
+      for (const needle of ['C:\\work\\alpha', '需要提交的事', '任务清单', '把条例做完', '写测试', '拖动排序', '存储改造', '经验一条']) {
+        if (!text.includes(needle)) throw new Error(`the clause is missing ${needle}: ${text.slice(0, 240)}`)
+      }
+      // A done task must read as done in the list, not silently vanish.
+      const doneRow = allNodes(tree).find((node) => textOf(node).trim() === '拖动排序')
+      if (!doneRow) throw new Error('a finished task should still be listed')
+    })
+
+    await harness.check('adding a task posts the whole list with the new item', async () => {
+      const record = clauseRecord()
+      await mountView('dev-env-handoff', clauseRoutes(record))
+      const field = inputByPlaceholder(tree, '新任务，回车添加')
+      if (!field) throw new Error('the add-task field should be present')
+      setValue(field, '新加的一条')
+      await flush()
+      clickButton(tree, '添加')
+      await flush()
+      const posted = fetchCalls.filter((call) => call.method === 'POST' && call.path.endsWith('/handoff'))
+      if (!posted.length) throw new Error('adding a task must post the record')
+      const todo = posted[posted.length - 1].body.record.handoff.todo
+      if (!todo.some((row) => row.text === '新加的一条')) {
+        throw new Error(`the new task was not sent: ${JSON.stringify(todo)}`)
+      }
+      // The existing ids must survive: they are what makes dragging and deleting land on the right row.
+      if (!todo.some((row) => row.id === 't1')) throw new Error('existing task ids must be preserved')
+    })
+
+    await harness.check('ticking a task posts it as done, keeping the rest', async () => {
+      const record = clauseRecord()
+      await mountView('dev-env-handoff', clauseRoutes(record))
+      const boxes = allNodes(tree).filter((node) => node.type === 'input' && node.props && node.props.type === 'checkbox')
+      if (!boxes.length) throw new Error('tasks should be tickable')
+      boxes[0].props.onChange({ target: { checked: true } })
+      await flush()
+      const posted = fetchCalls.filter((call) => call.method === 'POST' && call.path.endsWith('/handoff'))
+      const todo = posted[posted.length - 1].body.record.handoff.todo
+      const first = todo.find((row) => row.id === 't1')
+      if (!first || first.done !== true) throw new Error(`the first task should be done: ${JSON.stringify(first)}`)
+      if (todo.length !== 2) throw new Error('ticking must not drop the other task')
+    })
+
+    await harness.check('clearing a clause asks first, and cancelling writes nothing', async () => {
+      const record = clauseRecord()
+      await mountView('dev-env-handoff', clauseRoutes(record))
+      clickButton(tree, '清空条例')
+      await flush()
+      if (!visibleTextOf(tree).includes('清空这份条例？')) throw new Error('a confirmation must appear')
+      // The dialog must say what is kept, or the warning invites the wrong answer.
+      if (!visibleTextOf(tree).includes('标签会保留')) throw new Error('the confirmation should state what survives')
+      if (fetchCalls.some((call) => call.path.includes('/handoff/clear'))) {
+        throw new Error('nothing may be cleared before the user confirms')
+      }
+      clickButton(tree, '不清空')
+      await flush()
+      if (fetchCalls.some((call) => call.path.includes('/handoff/clear'))) {
+        throw new Error('cancelling must not clear anything')
+      }
+    })
+
+    await harness.check('confirming a clear actually posts it', async () => {
+      const record = clauseRecord()
+      await mountView('dev-env-handoff', clauseRoutes(record))
+      clickButton(tree, '清空条例')
+      await flush()
+      clickButton(tree, '确认清空')
+      await flush()
+      const cleared = fetchCalls.filter((call) => call.path.includes('/handoff/clear'))
+      if (cleared.length !== 1) throw new Error(`expected one clear call, got ${cleared.length}`)
+      if (cleared[0].body.projectKey !== record.projectKey) {
+        throw new Error(`the clear must name the project, got ${JSON.stringify(cleared[0].body)}`)
+      }
+    })
+
+    await harness.check('a fill that fell back to the current conversation says so', async () => {
+      // The host refuses to silently downgrade: when `fork` cannot run it falls back to `current` and puts
+      // the reason in the response, because the cost of the fallback is this conversation's context.
+      const record = clauseRecord()
+      await mountView(
+        'dev-env-handoff',
+        clauseRoutes(record, {
+          '/handoff/fill': {
+            status: 200,
+            body: { ok: true, via: 'current', fellBackFrom: 'fork', note: '没有子智能体启动入口，已改用当前对话总结' },
+          },
+          '/handoff/capability': { status: 200, body: { ok: true, capability: { canForkFill: false, canCompact: false, canSubagentFill: true } } },
+        }),
+      )
+      clickButton(tree, '一键填充')
+      await flush()
+      const fills = fetchCalls.filter((call) => call.path.includes('/handoff/fill'))
+      if (fills.length !== 1) throw new Error(`expected one fill call, got ${fills.length}`)
+      if (!visibleTextOf(tree).includes('已改用当前对话总结')) {
+        throw new Error(`the fallback reason must reach the user: ${visibleTextOf(tree).slice(0, 240)}`)
+      }
+    })
+
+    await harness.check('the raw fields stay collapsed until asked for, so the clause reads as two columns', async () => {
+      // The tab used to render the read-only columns *and* six textareas for the same fields. Two
+      // representations of one record is not just clutter: a reader has to skip one, and an editor can
+      // change the same content in two places without either showing the other's state.
+      const record = clauseRecord()
+      await mountView('dev-env-handoff', clauseRoutes(record))
+      const collapsed = visibleTextOf(tree)
+      if (collapsed.includes('待办事项（一行一件）')) throw new Error('the raw list fields should start hidden')
+      if (!collapsed.includes('需要提交的事')) throw new Error('the columns should be the visible form')
+      clickButton(tree, '编辑原文')
+      await flush()
+      const opened = visibleTextOf(tree)
+      for (const needle of ['这个项目要做什么（目标与约束）', '待办事项（一行一件）', '正在进行', '经验与坑']) {
+        if (!opened.includes(needle)) throw new Error(`editing should reveal ${needle}`)
+      }
+      // And it closes again, so the reader can get back to the two-column view.
+      clickButton(tree, '收起编辑')
+      await flush()
+      if (visibleTextOf(tree).includes('待办事项（一行一件）')) throw new Error('editing should collapse again')
+    })
+
+    // ------------------------------------------------------------ state tab
+
+    const stateBody = (over = {}) => ({
+      status: 200,
+      body: {
+        ok: true,
+        state: Object.assign(
+          {
+            pressure: { band: 'hot', ratio: 0.75, usedTokens: 75000, contextWindow: 100000, reason: null },
+            messages: 210,
+            compactions: 2,
+            bands: [{ id: 'hot', zh: '偏高', en: 'High', advice: { zh: '先把条例更新一次', en: 'update the clause' } }],
+            checklist: [{ id: 'repeat', zh: '重复已纠正的错', en: 'repeating a fixed mistake' }],
+          },
+          over,
+        ),
+      },
+    })
+
+    await harness.check('the state tab draws the numbers it was given', async () => {
+      await mountView('dev-env-state', { '/state': stateBody() })
+      const text = visibleTextOf(tree)
+      for (const needle of ['75.0%', '75,000 / 100,000 tokens', '偏高', '210', '先把条例更新一次', '重复已纠正的错']) {
+        if (!text.includes(needle)) throw new Error(`the state tab is missing ${needle}: ${text.slice(0, 240)}`)
+      }
+    })
+
+    await harness.check('an unmeasurable state shows a dash and the reason, never a fake percentage', async () => {
+      await mountView('dev-env-state', {
+        '/state': stateBody({ pressure: { band: 'unknown', ratio: null, usedTokens: null, contextWindow: null, reason: '缺少窗口' }, messages: null, compactions: null, bands: [], checklist: [] }),
+      })
+      const text = visibleTextOf(tree)
+      if (!text.includes('—')) throw new Error('an unknown state should show a dash')
+      if (!text.includes('缺少窗口')) throw new Error('it should say what is missing')
+      if (/\d+\.\d%/.test(text)) throw new Error(`no percentage may be invented: ${text.slice(0, 200)}`)
+    })
+
+    await harness.check('ticking two symptoms raises the warning', async () => {
+      await mountView('dev-env-state', {
+        '/state': stateBody({
+          checklist: [
+            { id: 'a', zh: '征兆一', en: 'one' },
+            { id: 'b', zh: '征兆二', en: 'two' },
+          ],
+        }),
+      })
+      const boxes = allNodes(tree).filter((node) => node.type === 'input')
+      if (boxes.length < 2) throw new Error('the checklist should be present')
+      boxes[0].props.onChange({ target: { checked: true } })
+      await flush()
+      if (visibleTextOf(tree).includes('现在就该更新项目条例')) throw new Error('one symptom is not enough to warn')
+      boxes[1].props.onChange({ target: { checked: true } })
+      await flush()
+      if (!visibleTextOf(tree).includes('现在就该更新项目条例')) {
+        throw new Error(`two symptoms should warn: ${visibleTextOf(tree).slice(0, 240)}`)
+      }
+    })
+
+    // ------------------------------------------------------------ clause dock (above the composer)
+
+    await harness.check('the dock asks to seed exactly once per conversation', async () => {
+      await mountView('dev-env-clause', {
+        '/handoff/seed': { status: 200, body: { ok: true, injected: true } },
+      })
+      const seeds = () => fetchCalls.filter((call) => call.path.includes('/handoff/seed'))
+      if (seeds().length !== 1) throw new Error(`expected one seed attempt, got ${seeds().length}`)
+      if (!visibleTextOf(tree).includes('已自动带入本项目的条例')) throw new Error('an injected clause should be reported')
+      // A re-render is what a poll causes; it must not post the premise again.
+      renderView('dev-env-clause')
+      await flush()
+      if (seeds().length !== 1) throw new Error('a re-render must not seed twice')
+    })
+
+    await harness.check('the dock sends the chosen project clause by its key', async () => {
+      await mountView('dev-env-clause', {
+        '/handoff/seed': { status: 200, body: { ok: true, injected: false, reason: '自动带入未开启' } },
+        '/handoff/projects': {
+          status: 200,
+          body: {
+            ok: true,
+            currentKey: 'dir:c:\\work\\alpha',
+            projects: [
+              { projectKey: 'dir:c:\\work\\alpha', projectPath: 'C:\\work\\alpha', summary: '当前项目摘要', open: 2, isCurrent: true },
+              { projectKey: 'dir:c:\\work\\beta', projectPath: 'C:\\work\\beta', summary: '另一个项目', open: 0, isCurrent: false },
+            ],
+          },
+        },
+        '/handoff/send': { status: 200, body: { ok: true, summary: '已把项目条例交给会话' } },
+      })
+      clickButton(tree, '📋 项目条例')
+      await flush()
+      const text = visibleTextOf(tree)
+      if (!text.includes('C:\\work\\alpha') || !text.includes('C:\\work\\beta')) {
+        throw new Error(`both projects should be offered: ${text.slice(0, 240)}`)
+      }
+      // The current project's row is marked, because that is the one a user almost always wants.
+      if (!text.includes('当前项目')) throw new Error('the current project should be marked')
+      // Send through the second row, to prove the choice is honoured rather than the first row being used.
+      const sends = allNodes(tree).filter((node) => node.type === 'button' && textOf(node).trim() === '带进这个对话')
+      if (sends.length !== 2) throw new Error(`expected one send per project, got ${sends.length}`)
+      press(sends[1])
+      await flush()
+      const posted = fetchCalls.filter((call) => call.path.includes('/handoff/send'))
+      if (posted.length !== 1) throw new Error(`expected one send, got ${posted.length}`)
+      if (posted[0].body.projectKey !== 'dir:c:\\work\\beta') {
+        throw new Error(`the chosen project must be the one sent, got ${JSON.stringify(posted[0].body)}`)
+      }
+      // The session is the recipient, and it is sent explicitly so the host does not pick another one.
+      if (posted[0].body.sessionId !== SESSION_ID) throw new Error('the send must name this conversation')
+    })
+
   } finally {
     for (const name of Object.keys(saved)) restore(name)
   }

@@ -34,6 +34,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The clause tab edited the same record twice.** It rendered the read-only two-column view *and* six
+  textareas for the same fields, so a reader had to skip one representation and an editor could change the
+  same content in two places that never showed each other's state. The raw fields now sit behind
+  「编辑原文」 and start collapsed, leaving the two columns as the visible form.
+- **A fill that fell back to `current` did so silently.** The host explains the downgrade and its cost —
+  this conversation's context — in the response, and the panel dropped it, showing the generic "已请这个
+  对话的模型总结". The explanation is now displayed. This is the same rule as everywhere else here: never
+  take a more expensive route on the user's behalf without saying so.
 - **The `fork` fill cannot work in this DSH build, so it no longer refuses — it falls back.** Measured with
   the capability probe: the subagent registry exposes `list`, `getProvider`, `prompt` and `sendMessage` but
   **no `start` or `startContinuable`**, and the shipped `app.asar` no longer declares

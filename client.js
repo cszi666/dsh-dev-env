@@ -196,6 +196,8 @@ window.__ModuleLoader__.load({
       fromOwnDownload: '自己下载',
       extResumed: '已续传',
       clauseReorder: '拖动可调顺序',
+      editOpen: '编辑原文',
+      editClose: '收起编辑',
       clearClause: '清空条例',
       clearConfirmTitle: '清空这份条例？',
       clearConfirmBody: '会把目标、已完成、经验、下一步和全部任务清空——**不能撤销**。项目身份与你打的标签会保留，所以清空后重新填充仍写回同一个项目。如果只是填充失败，也可以先试「用当前对话总结」。',
@@ -356,6 +358,8 @@ window.__ModuleLoader__.load({
       stateChecklistWarn: 'Two or more: update the project clause now, then move to a new conversation.',
       stateLimitNote: 'Note: this cannot measure whether the model is tired — there is no channel for that. It measures context saturation, which is the real cause of answers getting worse as a conversation grows.',
       clauseReorder: 'drag to reorder',
+      editOpen: 'Edit raw fields',
+      editClose: 'Hide raw fields',
       clearClause: 'Clear clause',
       clearConfirmTitle: 'Clear this clause?',
       clearConfirmBody: 'This empties the goal, what is done, the lessons, the next step and every task — **it cannot be undone**. The project identity and your tags are kept, so a later fill still writes to the same project. If the fill is what failed, try "summarise in this conversation" first.',
@@ -699,10 +703,14 @@ window.__ModuleLoader__.load({
       const [sent, setSent] = React.useState(null)
       const [filling, setFilling] = React.useState(false)
       const [filled, setFilled] = React.useState(false)
+      // host 对这次填充的说明（例如"已降级为当前对话"）。必须显示，见 fill() 里的注释。
+      const [fillNote, setFillNote] = React.useState(null)
       // 标签选择：{ open, picked }。用户按按钮决定，插件从不自己打标签。
       const [tagChoice, setTagChoice] = React.useState(null)
       // 清空确认：**必须显式确认**。这是条例页签里唯一会删内容的动作，误点一次就丢了整份记录。
       const [confirmClear, setConfirmClear] = React.useState(false)
+      // 原始编辑面默认收起：上面两栏已经把这同一份内容只读地摆出来了。
+      const [editing, setEditing] = React.useState(false)
       // 设置（只读）：一键填充的方式、标签默认是否全选。
       const [settings, setSettings] = React.useState(null)
 
@@ -826,14 +834,17 @@ window.__ModuleLoader__.load({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId, method, lang: currentLang }),
           })
-          // fork 是**同步**完成的：它直接把新记录还给我，所以立刻就能显示，且能确认真的写入了。
+          // `fork` 是**同步**完成的：它直接把新记录还给我，所以立刻显示，也能确认真的写入了。
           if (payload.record) {
             setProject(payload.project || project)
             setRecord(payload.record)
             setFilled(true)
           } else {
-            // current 是异步的（模型随后才调工具），所以只能说"已请它写"，之后再刷新看结果。
+            // `current` 是异步的（模型随后才调工具），只能先说"已请它写"。
+            // **host 的解释必须显示出来**：降级到 current 意味着这次会占用本对话的上下文，
+            // 而那是用户选 fork 想避开的东西。把 note 丢掉等于让他为没选的代价买单。
             setFilled(true)
+            setFillNote(typeof payload.note === 'string' && payload.note ? payload.note : null)
           }
         } catch (err) {
           setError(String((err && err.message) || err))
@@ -951,9 +962,10 @@ window.__ModuleLoader__.load({
           h('button', { className: 'dsh-de-btn', onClick: fill, disabled: filling }, filling ? t('filling') : t('fillNow')),
           h('button', { className: 'dsh-de-btn danger', onClick: () => setConfirmClear(true) }, t('clearClause')),
           h('button', { className: 'dsh-de-btn', onClick: openTags }, t('tagButton')),
+          h('button', { className: 'dsh-de-btn', onClick: () => setEditing((cur) => !cur) }, editing ? t('editClose') : t('editOpen')),
           h('button', { className: 'dsh-de-btn', onClick: save }, t('handoffSave')),
         ),
-        filled ? h('div', { className: 'dsh-de-ok' }, t('fillSent')) : null,
+        filled ? h('div', { className: 'dsh-de-ok' }, fillNote || t('fillSent')) : null,
         // 已打的标签显示出来，让人一眼知道这份记录带着什么用途标记。
         record.tags && record.tags.length
           ? h(
@@ -984,12 +996,20 @@ window.__ModuleLoader__.load({
             : '',
         ),
         error ? h('div', { className: 'dsh-de-err' }, error) : null,
-        textField('summary', t('handoffSummary'), 2),
-        listField('todo', t('handoffTodo')),
-        listField('doing', t('handoffDoing')),
-        listField('done', t('handoffDone')),
-        textField('next', t('handoffNext'), 2),
-        textField('notes', t('handoffNotes'), 3),
+        // 原始编辑面**默认收起**。上面两栏已经把同一份内容只读地摆出来了，同时再摊开六个文本框
+        // 等于同一份东西显示两遍：读的人要跳过一遍，改的人还容易在两种表示之间打架。
+        editing
+          ? h(
+              'div',
+              { className: 'dsh-de-editor' },
+              textField('summary', t('handoffSummary'), 2),
+              listField('todo', t('handoffTodo')),
+              listField('doing', t('handoffDoing')),
+              listField('done', t('handoffDone')),
+              textField('next', t('handoffNext'), 2),
+              textField('notes', t('handoffNotes'), 3),
+            )
+          : null,
         h(
           'div',
           { className: 'dsh-de-pick' },
