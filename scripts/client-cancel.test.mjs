@@ -1594,6 +1594,80 @@ export async function runClientCancelTests(harness) {
       if (todo.length !== 2) throw new Error('ticking must not drop the other task')
     })
 
+    /** Three tasks in three different groups: the shape that exposes the grouping bug. */
+    const groupedRecord = () =>
+      clauseRecord({
+        todo: [
+          { id: 'g1', text: '需求一', done: false, tag: 'continuation' },
+          { id: 'g2', text: '经验一', done: false, tag: 'reusable' },
+          { id: 'g3', text: '没打标签', done: false, tag: null },
+        ],
+      })
+    const groupNodes = (root) =>
+      allNodes(root).filter(
+        (node) => node.props && typeof node.props.className === 'string' && node.props.className.split(' ').includes('dsh-de-cl-group'),
+      )
+
+    await harness.check('tasks are grouped by their own tag, not by the record-level tags', async () => {
+      // The grouping loop used to read the record's tags for every row, so everything landed in the
+      // first group and the rest rendered empty — "grouped by tag" never actually happened.
+      await mountView('dev-env-handoff', clauseRoutes(groupedRecord()))
+      const groups = groupNodes(tree)
+      if (groups.length !== 3) {
+        throw new Error(`expected three groups (two tags + untagged), got ${groups.length}: ${visibleTextOf(tree).slice(0, 220)}`)
+      }
+      const textIn = (node) => visibleTextOf(node)
+      const withTask = (task) => groups.filter((group) => textIn(group).includes(task))
+      for (const [task, other] of [['需求一', '经验一'], ['经验一', '需求一']]) {
+        const holders = withTask(task)
+        if (holders.length !== 1) throw new Error(`${task} should appear in exactly one group, found ${holders.length}`)
+        if (textIn(holders[0]).includes(other)) throw new Error(`${task} and ${other} must not share a group`)
+      }
+    })
+
+    await harness.check('editing one group keeps the other groups instead of deleting them', async () => {
+      // Each group's list hands back only its own tasks, while the save writes the whole `todo`. Without
+      // merging by group, ticking one task would drop every task that lives in another group — the one
+      // path in this tab that loses content for good.
+      await mountView('dev-env-handoff', clauseRoutes(groupedRecord()))
+      const boxes = allNodes(tree).filter((node) => node.type === 'input' && node.props && node.props.type === 'checkbox')
+      if (!boxes.length) throw new Error('tasks should be tickable')
+      boxes[0].props.onChange({ target: { checked: true } })
+      await flush()
+      const posted = fetchCalls.filter((call) => call.method === 'POST' && call.path.endsWith('/handoff'))
+      if (!posted.length) throw new Error('ticking a task must post the record')
+      const todo = posted[posted.length - 1].body.record.handoff.todo
+      const ids = todo.map((row) => row.id).sort()
+      if (ids.join(',') !== 'g1,g2,g3') throw new Error(`saving one group must keep every task, got ${JSON.stringify(ids)}`)
+      const ticked = todo.find((row) => row.id === 'g1')
+      if (!ticked || ticked.done !== true) throw new Error(`the ticked task should be done: ${JSON.stringify(ticked)}`)
+    })
+
+    await harness.check('a task added inside a group carries that group’s tag', async () => {
+      // Without the tag the new row is "untagged" on the next render, so it appears to jump out of the
+      // group the user typed it into.
+      await mountView('dev-env-handoff', clauseRoutes(groupedRecord()))
+      const groups = groupNodes(tree)
+      const reusable = groups.find((group) => visibleTextOf(group).includes('经验一'))
+      if (!reusable) throw new Error('the reusable group should render')
+      const field = inputByPlaceholder(reusable, '新任务，回车添加')
+      if (!field) throw new Error('the group should offer its own add field')
+      setValue(field, '新增一条')
+      await flush()
+      // Re-query after the re-render: the button's handler closes over the draft state, and the node
+      // captured before the flush still closes over the empty one.
+      const fresh = groupNodes(tree).find((group) => visibleTextOf(group).includes('经验一'))
+      if (!fresh) throw new Error('the reusable group should still render')
+      clickButton(fresh, '添加')
+      await flush()
+      const posted = fetchCalls.filter((call) => call.method === 'POST' && call.path.endsWith('/handoff'))
+      const todo = posted[posted.length - 1].body.record.handoff.todo
+      const added = todo.find((row) => row.text === '新增一条')
+      if (!added) throw new Error(`the new task was not sent: ${JSON.stringify(todo)}`)
+      if (added.tag !== 'reusable') throw new Error(`the new task should carry the group tag, got ${JSON.stringify(added.tag)}`)
+      if (todo.length !== 4) throw new Error(`adding must keep the other tasks, got ${todo.length}`)
+    })
+
     await harness.check('clearing a clause asks first, and cancelling writes nothing', async () => {
       const record = clauseRecord()
       await mountView('dev-env-handoff', clauseRoutes(record))

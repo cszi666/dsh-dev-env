@@ -904,12 +904,19 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 任务清单的就地保存（勾选、增删、拖动都走这里）。 */
-      const saveTasks = async (listName, tasks) => {
+      /**
+       * 任务清单的就地保存（勾选、增删、拖动都走这里）。
+       *
+       * `groupKey` 只在**分组视图**里传：那里每个清单只持有自己那一组任务，而保存写回的是整份
+       * `todo`。直接覆盖就会把其它组的任务删掉——先按组替换、其余原样保留，丢内容的路径才不存在。
+       */
+      const saveTasks = async (listName, tasks, groupKey) => {
         // 用 `record.handoff` 而不是 `handoff`：后者在本组件里声明得更晚（TDZ），
         // 而这个函数在渲染期间就会被调用。
         const before = (record && record.handoff) || {}
-        const nextHandoff = Object.assign({}, before, { [listName]: tasks })
+        const all = Array.isArray(before[listName]) ? before[listName] : []
+        const nextList = groupKey == null ? tasks : replaceGroup(all, tasks, groupKey)
+        const nextHandoff = Object.assign({}, before, { [listName]: nextList })
         // 先本地更新，界面立刻响应；请求失败时再回滚成服务端的真值。
         setRecord((current) => Object.assign({}, current, { handoff: nextHandoff }))
         try {
@@ -1118,14 +1125,14 @@ window.__ModuleLoader__.load({
      * 拖动用原生 HTML5 draggable，而不是引第三方库：这个插件是零依赖的，为一个列表引入一个拖拽库
      * 不划算。代价是触屏上拖不动，而这是一个桌面应用的侧栏。
      */
-    function TaskList({ listName, tasks, tagOf, onSave }) {
+    function TaskList({ listName, tasks, tagOf, onSave, groupKey }) {
       const [dragging, setDragging] = React.useState(null)
       const [over, setOver] = React.useState(null)
       const [draft, setDraft] = React.useState('')
       const [editing, setEditing] = React.useState(null)
 
       /** 改一项就整份写回：每条一次请求会让连续拖动变成一串请求。 */
-      const commit = (next) => onSave(listName, next)
+      const commit = (next) => onSave(listName, next, groupKey)
 
       const toggle = (id) => commit(tasks.map((row) => (row.id === id ? Object.assign({}, row, { done: !row.done }) : row)))
       const remove = (id) => commit(tasks.filter((row) => row.id !== id))
@@ -1135,7 +1142,9 @@ window.__ModuleLoader__.load({
         const text = draft.trim()
         if (!text) return
         // id 本地生成即可；host 会再归一化一次并保证唯一。
-        commit(tasks.concat({ id: `t${Date.now().toString(36)}`, text, done: false, tag: null }))
+        // 在分组清单里新增，必须带上这一组的标签：否则保存后它变成「未分类」，看起来像自己跳了组。
+        const tag = groupKey && groupKey !== '__untagged__' ? groupKey : null
+        commit(tasks.concat({ id: `t${Date.now().toString(36)}`, text, done: false, tag }))
         setDraft('')
       }
 
@@ -1246,14 +1255,42 @@ window.__ModuleLoader__.load({
      *
      * 两栏的区别不是装饰：左栏是"已经/将要交出去什么"，右栏是"还要做什么"。
      */
+    /** 一条任务属于哪一组：它**自己的**标签；没有标签、或不在清单里，就是「未分类」。 */
+    function groupKeyOf(task) {
+      const tag = task && typeof task.tag === 'string' ? task.tag : ''
+      return TAG_CHOICES.some((choice) => choice.key === tag) ? tag : '__untagged__'
+    }
+
+    /**
+     * 把一组任务合回全量清单：这一组在它原来出现的位置被替换，其它组保持原顺序。
+     * 保存写回的是**整份** `todo`，所以分组视图必须走这里，而不是直接覆盖。
+     */
+    function replaceGroup(all, groupTasks, groupKey) {
+      const merged = []
+      let placed = false
+      for (const task of all) {
+        if (groupKeyOf(task) !== groupKey) {
+          merged.push(task)
+          continue
+        }
+        if (!placed) {
+          merged.push(...groupTasks)
+          placed = true
+        }
+      }
+      if (!placed) merged.push(...groupTasks)
+      return merged
+    }
+
     function ClauseColumns({ handoff, tags, tagOf, onSaveTasks }) {
       // 右栏按标签分组，但**每一组内部仍是可拖动的任务清单**；分组只是视觉归类。
+      // 分组依据是任务自己的 `tag`——曾经这里读的是记录级 `tags`，于是所有任务都落进第一组，
+      // 「按标签分组」从未生效。
       const byTag = new Map()
       for (const choice of TAG_CHOICES) byTag.set(choice.key, [])
       byTag.set('__untagged__', [])
       for (const row of handoff.todo || []) {
-        const key = tags.find((tag) => byTag.has(tag)) || '__untagged__'
-        byTag.get(key).push(row)
+        byTag.get(groupKeyOf(row)).push(row)
       }
 
       const leftBlock = (title, text) =>
@@ -1308,7 +1345,7 @@ window.__ModuleLoader__.load({
                         choice ? choice.label() : t('clauseUntagged'),
                         h('span', { className: 'dsh-de-cl-count' }, String(items.length)),
                       ),
-                      h(TaskList, { listName: 'todo', tasks: items, tagOf, onSave: onSaveTasks, t }),
+                      h(TaskList, { listName: 'todo', tasks: items, tagOf, onSave: onSaveTasks, groupKey: key, t }),
                     )
                   })
               : h(TaskList, { listName: 'todo', tasks: allTasks, tagOf, onSave: onSaveTasks, t })
