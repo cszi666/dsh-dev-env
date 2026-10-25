@@ -188,8 +188,9 @@ window.__ModuleLoader__.load({
       settingsSave: '保存设置',
       settingsSaved: '已保存',
       settingsUnavailable: '这台机器上不可用：',
-      methodFork: '用子智能体总结（默认，不占用本对话上下文）',
-      methodCurrent: '用当前对话总结（会占用本对话上下文）',
+      manualTitle: 'Dev Env 说明书',
+      methodFork: '用子智能体总结（不占用本对话上下文，需要 DSH 暴露启动入口）',
+      methodCurrent: '用当前对话总结（默认，会占用本对话上下文）',
       methodCompact: '用 DSH 压缩服务总结（会就地压缩这段对话）',
       speed: '速率',
       eta: '剩余',
@@ -394,8 +395,9 @@ window.__ModuleLoader__.load({
       settingsSave: 'Save settings',
       settingsSaved: 'Saved',
       settingsUnavailable: 'Unavailable on this machine: ',
-      methodFork: 'Summarise with a subagent (default, costs no main context)',
-      methodCurrent: 'Summarise in this conversation (spends this context)',
+      manualTitle: 'Dev Env manual',
+      methodFork: 'Summarise with a subagent (costs no main context, needs DSH to expose a starter)',
+      methodCurrent: 'Summarise in this conversation (default, spends this context)',
       methodCompact: 'Use DSH compaction (which rewrites this conversation)',
       speed: 'rate',
       eta: 'left',
@@ -498,7 +500,7 @@ window.__ModuleLoader__.load({
 .dsh-de-setgrouptitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
 .dsh-de-setlabel{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
 .dsh-de-setwhy{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin-top:4px}
-.dsh-de-setwarn{font-size:12px;line-height:1.6;color:var(--dsw-alias-warning-primary, #b45309);margin-top:4px}
+.dsh-de-setwarn{font-size:12px;line-height:1.6;color:var(--dsw-alias-state-warn-primary);margin-top:4px}
 .dsh-de-setkey{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.65;margin-top:3px}
 .dsh-de-editor{margin-top:8px}
 `
@@ -691,6 +693,35 @@ window.__ModuleLoader__.load({
         /* ignore */
       }
       return Promise.resolve()
+    }
+
+    /**
+     * 正文里的 `**粗体**` 与反引号渲染成真实样式，而不是把标记原样显示。
+     *
+     * 说明书的段落、设置项的 `why`、工具的 note 都带这两种标记。原来只有说明书页做了这件事，
+     * 于是设置页把 `**需要 DSH 暴露…**` 当成正文显示——用户看到的是一串星号。
+     */
+    function rich(text) {
+      const nodes = []
+      let rest = String(text)
+      let key = 0
+      for (;;) {
+        const bold = /\*\*([^*]+)\*\*/.exec(rest)
+        const code = /`([^`]+)`/.exec(rest)
+        const next = [bold, code].filter(Boolean).sort((a, b) => a.index - b.index)[0]
+        if (!next) {
+          if (rest) nodes.push(rest)
+          break
+        }
+        if (next.index > 0) nodes.push(rest.slice(0, next.index))
+        nodes.push(
+          next === bold
+            ? h('b', { key: `b${key++}` }, next[1])
+            : h('code', { className: 'dsh-de-cmd', key: `c${key++}` }, next[1]),
+        )
+        rest = rest.slice(next.index + next[0].length)
+      }
+      return nodes
     }
 
     // ------------------------------------------------------------ session handover
@@ -1537,9 +1568,9 @@ window.__ModuleLoader__.load({
       // 越接近上限越醒目。颜色在这里定，阈值仍由 host 的档位给出——不在两处各写一遍。
       const color =
         pressure.band === 'critical'
-          ? 'var(--dsw-alias-danger-primary, #d33)'
+          ? 'var(--dsw-alias-state-error-primary)'
           : pressure.band === 'hot'
-            ? 'var(--dsw-alias-warning-primary, #d80)'
+            ? 'var(--dsw-alias-state-warn-primary)'
             : 'var(--dsw-alias-brand-primary)'
       const tickCount = Object.values(ticked).filter(Boolean).length
       const num = (value) => (typeof value === 'number' ? value.toLocaleString() : '—')
@@ -1784,7 +1815,7 @@ window.__ModuleLoader__.load({
                       }),
                       h('span', null, item.label),
                     ),
-                h('div', { className: 'dsh-de-setwhy' }, item.why),
+                h('div', { className: 'dsh-de-setwhy' }, rich(item.why)),
                 blockedCurrent
                   ? h(
                       'div',
@@ -1824,30 +1855,6 @@ window.__ModuleLoader__.load({
 
       if (!view) {
         return h('div', { className: 'dsh-de-settings' }, h('div', { className: 'dsh-de-msg' }, error || t('loading')))
-      }
-
-      /** 说明书正文里有 `**粗体**` 与反引号——渲染成真实样式，而不是把标记原样显示。 */
-      const rich = (text) => {
-        const nodes = []
-        let rest = String(text)
-        let key = 0
-        for (;;) {
-          const bold = /\*\*([^*]+)\*\*/.exec(rest)
-          const code = /`([^`]+)`/.exec(rest)
-          const next = [bold, code].filter(Boolean).sort((a, b) => a.index - b.index)[0]
-          if (!next) {
-            if (rest) nodes.push(rest)
-            break
-          }
-          if (next.index > 0) nodes.push(rest.slice(0, next.index))
-          nodes.push(
-            next === bold
-              ? h('b', { key: `b${key++}` }, next[1])
-              : h('code', { className: 'dsh-de-cmd', key: `c${key++}` }, next[1]),
-          )
-          rest = rest.slice(next.index + next[0].length)
-        }
-        return nodes
       }
 
       return h(

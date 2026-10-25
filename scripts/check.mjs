@@ -1910,6 +1910,16 @@ check('both dictionaries carry every key, or the other language shows raw keys',
   assert(zh.length > 40 && en.length > 40, `dictionaries look too small (${zh.length}/${en.length})`)
   for (const key of zh) assert(en.includes(key), `'${key}' is in the Chinese dictionary but missing from English`)
   for (const key of en) assert(zh.includes(key), `'${key}' is in the English dictionary but missing from Chinese`)
+
+  // The other half of the same failure: a key the markup asks for that is missing from *both* maps. The
+  // comparison above only looks at the two dictionaries, so it stays silent when nothing defines the key.
+  // That is how `manualTitle` shipped: the settings sidebar entry rendered the raw key as its title.
+  const used = [...new Set([...source.matchAll(/\bt\('([A-Za-z][A-Za-z0-9_]*)'\)/g)].map((match) => match[1]))]
+  assert(used.length > 40, `expected the markup to use many keys, found ${used.length}`)
+  for (const key of used) {
+    assert(zh.includes(key), `t('${key}') is used by the markup but missing from the Chinese dictionary`)
+    assert(en.includes(key), `t('${key}') is used by the markup but missing from the English dictionary`)
+  }
 })
 
 check('the two fill routes ask for different things, because they deliver differently', () => {
