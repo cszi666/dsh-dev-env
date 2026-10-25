@@ -2106,6 +2106,67 @@ check('bundle patch exists and inserts this package row', () => {
   assert(patch.includes(pkg.name), `patch does not mention ${pkg.name}`)
 })
 
+check('every surface ships the shared styles, and no class carries two different definitions', () => {
+  // Each slot injects its own <style>, and style tags are global. Two consequences, both real:
+  // the shared primitives (buttons, error row, dialog) used to live only in the panel's stylesheet, so
+  // a conversation tab opened without the panel had unstyled buttons; and `.dsh-de-state` meant both
+  // "job status chip" and "state page root", so whichever mounted last restyled the other. Neither is
+  // visible without opening two surfaces at once, so both are guarded here rather than by eye.
+  const source = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  const blocks = new Map()
+  for (const match of source.matchAll(/const\s+([A-Z_]+)\s*=\s*`([\s\S]*?)`/g)) {
+    if (/dsh-de-/.test(match[2])) blocks.set(match[1], match[2])
+  }
+  assert(blocks.has('BASE_CSS'), 'the shared stylesheet (BASE_CSS) must exist')
+
+  // Every <style> mount must carry the shared sheet, or that surface silently loses the primitives.
+  const mounts = [...source.matchAll(/h\('style',\s*null,\s*([^)]+)\)/g)].map((match) => match[1].trim())
+  assert(mounts.length >= 5, `expected a style mount per surface, found ${mounts.length}`)
+  for (const mount of mounts) {
+    assert(mount.includes('BASE_CSS'), `a surface mounts styles without BASE_CSS: ${mount}`)
+  }
+
+  // Same selector in two sheets with different rules = order-dependent styling.
+  const defined = new Map()
+  for (const [name, body] of blocks) {
+    for (const line of body.split('\n')) {
+      const rule = /^([^{]+)\{([^}]*)\}$/.exec(line.trim())
+      if (!rule) continue
+      for (const part of rule[1].split(',')) {
+        const selector = part.trim()
+        if (!defined.has(selector)) defined.set(selector, [])
+        defined.get(selector).push({ block: name, body: rule[2].trim() })
+      }
+    }
+  }
+  for (const [selector, rows] of defined) {
+    const bodies = new Set(rows.map((row) => row.body))
+    if (bodies.size > 1) {
+      const where = [...new Set(rows.map((row) => row.block))].join(' + ')
+      assert(false, `${selector} is defined differently in ${where}; whichever mounts last wins`)
+    }
+  }
+
+  // A class used by the markup but defined nowhere renders as an unstyled native control. This is how
+  // the settings dropdown shipped with the browser's default look (`dsh-de-setselect` vs `-select`).
+  const known = new Set()
+  for (const selector of defined.keys()) {
+    const cls = /^\.(dsh-de-[a-z0-9-]+)/.exec(selector)
+    if (cls) known.add(cls[1])
+  }
+  const used = new Set()
+  for (const match of source.matchAll(/className:\s*'([^']+)'/g)) {
+    for (const token of match[1].split(/\s+/)) if (token.startsWith('dsh-de-')) used.add(token)
+  }
+  for (const match of source.matchAll(/className:\s*`([^`]+)`/g)) {
+    for (const token of match[1].split(/\s+/)) {
+      const head = token.split('$')[0]
+      if (head.startsWith('dsh-de-')) used.add(head)
+    }
+  }
+  for (const cls of used) assert(known.has(cls), `${cls} is used in the markup but has no style anywhere`)
+})
+
 check('client half is declared and exported', () => {
   const client = pkg.dsh?.client
   assert(client && client.platform === 'web', 'dsh.client.platform must be "web"')

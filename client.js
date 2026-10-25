@@ -440,16 +440,47 @@ window.__ModuleLoader__.load({
 
     // ------------------------------------------------------------ styles
 
-    const CSS = `
-.dsh-de-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);position:relative}
-/* 来源选择器：浮在面板之上，而不是挤进某一行——它要的是"现在做一个决定"，不是"看一行详情"。 */
+    /**
+     * 共享原语：按钮、错误行、弹窗、标签片、下拉、说明块。
+     *
+     * **每个界面都要挂这一份。** 每个槽位各自插一条 `<style>`，而样式标签是全局的：这些规则原来
+     * 只写在主面板那份 CSS 里，于是"面板没打开、但打开了条例页/状态页/设置页"时，那些页面的按钮
+     * 就是浏览器默认样式。同理，同一个类名若在两份表里各写一条，谁后挂谁赢——那不是主题问题，
+     * 是层叠顺序问题。
+     *
+     * 这里只放**跨界面共用**的东西；各页面自己的布局规则仍留在自己的表里。
+     */
+    const BASE_CSS = `
+.dsh-de-spacer{flex:1}
+.dsh-de-btn{font:inherit;font-size:12px;appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:6px;padding:5px 10px;font-size:12px;line-height:16px;cursor:pointer;white-space:nowrap}
+.dsh-de-btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.dsh-de-btn:disabled{opacity:.5;cursor:default}
+.dsh-de-btn.primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
+.dsh-de-btn.primary:hover:not(:disabled){color:#fff;opacity:.9}
+.dsh-de-btn.ghost{background:transparent;border-color:transparent;color:var(--dsw-alias-label-secondary);padding:4px 6px}
+.dsh-de-btn.ghost:hover:not(:disabled){color:var(--dsw-alias-brand-primary)}
+/* 卸载是破坏性动作：红色、并且永远要经过一次确认。它不该和"复制命令"长得一样。 */
+.dsh-de-btn.danger{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);background:transparent}
+.dsh-de-btn.danger:hover:not(:disabled){background:var(--dsw-alias-state-error-primary);color:#fff}
+/* 键盘焦点必须看得见。此前一条 :focus-visible 都没有，纯键盘用户按 Tab 时不知道自己在哪。 */
+.dsh-de-btn:focus-visible,.dsh-de-tab:focus-visible,.dsh-de-select:focus-visible,.dsh-de-dockbtn:focus-visible,.dsh-de-learn:focus-visible,.dsh-de-taskgrip:focus-visible,.dsh-de-statecheck input:focus-visible,.dsh-de-setlabel input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+/* 动效只用于"还在跑"和进度；关掉动效偏好时必须一起关掉，否则界面对前庭敏感的人仍在动。 */
+@media (prefers-reduced-motion: reduce){
+.dsh-de-root *,.dsh-de-handoff *,.dsh-de-state *,.dsh-de-settings *,.dsh-de-dock *{animation:none !important;transition:none !important}
+}
+.dsh-de-msg{margin-top:10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-err{margin-top:10px;font-size:12px;color:var(--dsw-alias-state-error-primary);white-space:pre-wrap}
+.dsh-de-ok{color:var(--dsw-alias-state-success-primary)}
 .dsh-de-modal{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:20}
 .dsh-de-dialog{width:100%;max-width:520px;max-height:80%;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
 .dsh-de-dialog h2{margin:0 0 4px;font-size:14px;font-weight:600}
 .dsh-de-dialog .dsh-de-pickq{margin-bottom:10px}
-.dsh-de-count{font-size:12px;color:var(--dsw-alias-brand-primary);margin:10px 0 4px}
-.dsh-de-bar-slim{height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin-bottom:10px}
-.dsh-de-bar-slim span{display:block;height:100%;background:var(--dsw-alias-brand-primary);transition:width 1s linear}
+.dsh-de-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.dsh-de-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-chip b{color:var(--dsw-alias-label-primary);font-weight:600}
+.dsh-de-chip.ok b{color:var(--dsw-alias-state-success-primary)}
+.dsh-de-chip.bad b{color:var(--dsw-alias-state-warn-primary)}
+.dsh-de-chip.crit b{color:var(--dsw-alias-state-error-primary)}
 .dsh-de-source{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
 .dsh-de-source[data-first="1"]{border-color:var(--dsw-alias-brand-primary)}
 .dsh-de-sourcemain{flex:1;min-width:0}
@@ -457,46 +488,48 @@ window.__ModuleLoader__.load({
 .dsh-de-sourcehost{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-de-sourcetag{font-size:11px;color:var(--dsw-alias-label-secondary);flex:none}
 .dsh-de-sourcebad{color:var(--dsw-alias-label-secondary);opacity:.7}
+.dsh-de-select{font:inherit;font-size:12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:6px;padding:4px 8px;font-size:12px}
+.dsh-de-cmd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-radius:4px;padding:2px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(340px,100%)}
+.dsh-de-pick{margin:-4px 0 10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dsh-de-pickq{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dsh-de-pickmsg{font-size:11px;color:var(--dsw-alias-state-success-primary)}
+.dsh-de-pickmsg.bad{color:var(--dsw-alias-state-warn-primary)}
+.dsh-de-setgroup{margin-top:16px}
+.dsh-de-setgrouptitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
+.dsh-de-setlabel{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
+.dsh-de-setwhy{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin-top:4px}
+.dsh-de-setwarn{font-size:12px;line-height:1.6;color:var(--dsw-alias-warning-primary, #b45309);margin-top:4px}
+.dsh-de-setkey{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.65;margin-top:3px}
+.dsh-de-editor{margin-top:8px}
+`
+
+    const CSS = `
+.dsh-de-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);position:relative}
+/* 来源选择器：浮在面板之上，而不是挤进某一行——它要的是"现在做一个决定"，不是"看一行详情"。 */
+.dsh-de-count{font-size:12px;color:var(--dsw-alias-brand-primary);margin:10px 0 4px}
+.dsh-de-bar-slim{height:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin-bottom:10px}
+.dsh-de-bar-slim span{display:block;height:100%;background:var(--dsw-alias-brand-primary);transition:width 1s linear}
 .dsh-de-scroll{flex:1;min-height:0;overflow:auto;padding:0 20px 28px;display:flex;flex-direction:column}
 .dsh-de-head{padding:18px 20px 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-.dsh-de-headrow{display:flex;align-items:flex-start;gap:12px}
+.dsh-de-headrow{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .dsh-de-title{margin:0;font-size:16px;font-weight:600;line-height:22px}
 .dsh-de-sub{margin:4px 0 0;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-spacer{flex:1}
-.dsh-de-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:6px;padding:5px 10px;font-size:12px;line-height:16px;cursor:pointer;white-space:nowrap}
-.dsh-de-btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
-.dsh-de-btn:disabled{opacity:.5;cursor:default}
-.dsh-de-btn.primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
-.dsh-de-btn.primary:hover:not(:disabled){color:#fff;opacity:.9}
-.dsh-de-btn.ghost{background:transparent;border-color:transparent;color:var(--dsw-alias-label-secondary);padding:4px 6px}
-.dsh-de-btn.ghost:hover{color:var(--dsw-alias-brand-primary)}
-/* 卸载是破坏性动作：红色、并且永远要经过一次确认。它不该和"复制命令"长得一样。 */
-.dsh-de-btn.danger{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);background:transparent}
-.dsh-de-btn.danger:hover:not(:disabled){background:var(--dsw-alias-state-error-primary);color:#fff}
 .dsh-de-confirm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 10px 12px;padding:8px 10px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;background:var(--dsw-alias-bg-layer-1)}
 .dsh-de-confirmtext{font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary);flex:1;min-width:200px}
 .dsh-de-confirmtext b{color:var(--dsw-alias-state-error-primary)}
-.dsh-de-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
-.dsh-de-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-chip b{color:var(--dsw-alias-label-primary);font-weight:600}
-.dsh-de-chip.ok b{color:var(--dsw-alias-state-success-primary)}
-.dsh-de-chip.bad b{color:var(--dsw-alias-state-warn-primary)}
-.dsh-de-chip.crit b{color:var(--dsw-alias-state-error-primary)}
 .dsh-de-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:14px 0 10px}
-.dsh-de-tab{border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+.dsh-de-tab{font:inherit;font-size:12px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
 .dsh-de-tab[data-on="1"]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font-weight:600}
-.dsh-de-select{border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:6px;padding:4px 8px;font-size:12px}
 .dsh-de-group{margin-top:16px}
 .dsh-de-groupname{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.02em;margin-bottom:6px}
-.dsh-de-row{display:flex;align-items:center;gap:12px;padding:9px 12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:8px;margin-bottom:6px}
+.dsh-de-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:9px 12px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:8px;margin-bottom:6px}
 .dsh-de-row[data-missing="1"]{border-color:var(--dsw-alias-border-l2)}
-.dsh-de-name{font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-de-name{font-weight:500;min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsh-de-badge{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);flex:none}
 .dsh-de-badge.ess{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}
 .dsh-de-ver{font-size:12px;color:var(--dsw-alias-state-success-primary);flex:none}
 .dsh-de-no{font-size:12px;color:var(--dsw-alias-state-warn-primary);flex:none}
 .dsh-de-where{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
-.dsh-de-cmd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-radius:4px;padding:2px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
 .dsh-de-actions{display:flex;gap:6px;flex:none}
 .dsh-de-note{margin:-2px 0 10px 12px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 /* 任务区在 DOM 里仍是最后一个子元素，用 flex order 提到最前。
@@ -504,32 +537,29 @@ window.__ModuleLoader__.load({
    这样不改渲染结构，也就不必去动那段容易写错的 JSX。 */
 .dsh-de-jobs{order:-1;margin:14px 0 22px;border-bottom:1px solid var(--dsw-alias-border-l1);padding-bottom:12px}
 .dsh-de-job{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
-.dsh-de-jobhead{display:flex;align-items:center;gap:8px;font-size:12px}
-.dsh-de-state{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1)}
-.dsh-de-state.running{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
-.dsh-de-state.succeeded{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
-.dsh-de-state.failed{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
+.dsh-de-jobhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.dsh-de-jobstate{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--dsw-alias-border-l1)}
+.dsh-de-jobstate.running{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
+.dsh-de-jobstate.succeeded{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
+.dsh-de-jobstate.failed{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
 /* 取消是用户自己按的，不是出错：用中性灰，也不再有那个"还在跑"的脉冲点。 */
-.dsh-de-state.cancelled{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2)}
+.dsh-de-jobstate.cancelled{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2)}
 .dsh-de-pre{margin:6px 0 0;max-height:180px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:16px;white-space:pre-wrap;word-break:break-all;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-radius:6px;padding:8px}
-.dsh-de-msg{margin-top:10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-err{margin-top:10px;font-size:12px;color:var(--dsw-alias-state-error-primary);white-space:pre-wrap}
 .dsh-de-empty{margin-top:24px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px}
 .dsh-de-desc{margin:-3px 0 10px 12px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-learn{appearance:none;background:transparent;border:none;padding:0;margin-left:6px;font-size:11px;color:var(--dsw-alias-brand-primary);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.dsh-de-learn{appearance:none;background:transparent;border:none;padding:2px 4px;margin-left:4px;font-size:11px;color:var(--dsw-alias-brand-primary);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 .dsh-de-learn:hover{opacity:.75}
 .dsh-de-rowbusy{font-size:11px;color:var(--dsw-alias-brand-primary);flex:none;display:inline-flex;align-items:center;gap:5px}
 .dsh-de-progress{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-bar{position:relative;flex:1;min-width:130px;height:14px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;border:1px solid var(--dsw-alias-border-l1)}
-.dsh-de-barfill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .3s ease}
+.dsh-de-jbar{position:relative;flex:1;min-width:130px;height:14px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;border:1px solid var(--dsw-alias-border-l1)}
+.dsh-de-jbarfill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .3s ease}
 /* 百分比叠在槽内：进度由「条」本身表达，旁边的数字只是补充 */
-.dsh-de-barlabel{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1;color:var(--dsw-alias-label-primary);pointer-events:none}
-.dsh-de-bar[data-indeterminate="1"] .dsh-de-barfill{width:35%;animation:dsh-de-slide 1.1s ease-in-out infinite}
+.dsh-de-jbarlabel{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1;color:var(--dsw-alias-label-primary);pointer-events:none}
+.dsh-de-jbar[data-indeterminate="1"] .dsh-de-jbarfill{width:35%;animation:dsh-de-slide 1.1s ease-in-out infinite}
 @keyframes dsh-de-slide{0%{transform:translateX(-100%)}100%{transform:translateX(285%)}}
 .dsh-de-activity{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-.dsh-de-state.running::after{content:'';display:inline-block;width:5px;height:5px;margin-left:5px;border-radius:50%;background:currentColor;animation:dsh-de-pulse 1s ease-in-out infinite}
+.dsh-de-jobstate.running::after{content:'';display:inline-block;width:5px;height:5px;margin-left:5px;border-radius:50%;background:currentColor;animation:dsh-de-pulse 1s ease-in-out infinite}
 @keyframes dsh-de-pulse{0%,100%{opacity:.25}50%{opacity:1}}
-.dsh-de-ok{color:var(--dsw-alias-state-success-primary)}
 .dsh-de-ask{display:flex;align-items:center;gap:6px;margin:-4px 0 10px 12px}
 .dsh-de-askq{font-size:11px;color:var(--dsw-alias-label-secondary)}
 .dsh-de-grouphead{display:flex;align-items:center;gap:8px;margin-bottom:6px}
@@ -537,10 +567,6 @@ window.__ModuleLoader__.load({
 .dsh-de-detail{margin-top:8px;padding-top:8px;border-top:1px dashed var(--dsw-alias-border-l1)}
 .dsh-de-kv{display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 /* 「已经安装？选择对应文件夹」是次要动作：它排在安装按钮旁边，但不该抢主按钮的注意力。 */
-.dsh-de-pick{margin:-4px 0 10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.dsh-de-pickq{font-size:11px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-pickmsg{font-size:11px;color:var(--dsw-alias-state-success-primary)}
-.dsh-de-pickmsg.bad{color:var(--dsw-alias-state-warn-primary)}
 .dsh-de-roots{margin:0 0 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px 12px;background:var(--dsw-alias-bg-layer-1)}
 .dsh-de-rootrow{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px}
 .dsh-de-rootdir{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;color:var(--dsw-alias-label-primary)}
@@ -759,7 +785,7 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { className: 'dsh-de-handoff' },
-          h('style', null, HANDOFF_CSS),
+          h('style', null, BASE_CSS + HANDOFF_CSS),
           h('div', { className: 'dsh-de-msg' }, t('handoffNoSession')),
         )
       }
@@ -767,7 +793,7 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { className: 'dsh-de-handoff' },
-          h('style', null, HANDOFF_CSS),
+          h('style', null, BASE_CSS + HANDOFF_CSS),
           h('div', { className: 'dsh-de-msg' }, error || t('loading')),
         )
       }
@@ -951,7 +977,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-de-handoff' },
-        h('style', null, HANDOFF_CSS),
+        h('style', null, BASE_CSS + HANDOFF_CSS),
         h(
           'div',
           { className: 'dsh-de-hfhead' },
@@ -1362,7 +1388,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-de-dock' },
-        h('style', null, DOCK_CSS),
+        h('style', null, BASE_CSS + DOCK_CSS),
         h(
           'button',
           {
@@ -1462,7 +1488,7 @@ window.__ModuleLoader__.load({
         }
       }, [sessionId])
 
-      const shell = (body) => h('div', { className: 'dsh-de-state' }, h('style', null, STATE_CSS), body)
+      const shell = (body) => h('div', { className: 'dsh-de-state' }, h('style', null, BASE_CSS + STATE_CSS), body)
 
       if (!sessionId) return shell(h('div', { className: 'dsh-de-msg' }, t('handoffNoSession')))
       if (!state) return shell(h('div', { className: 'dsh-de-msg' }, error || t('loading')))
@@ -1498,7 +1524,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'dsh-de-gaugeval' }, percent === null ? '—' : `${percent.toFixed(1)}%`),
               h('span', { className: 'dsh-de-gaugeband' }, band ? (currentLang === 'zh' ? band.zh : band.en) : t('stateUnknown')),
             ),
-            h('div', { className: 'dsh-de-bar' }, h('span', { style: { width: `${percent === null ? 0 : percent}%`, background: color } })),
+            h('div', { className: 'dsh-de-gaugebar' }, h('span', { style: { width: `${percent === null ? 0 : percent}%`, background: color } })),
             h(
               'div',
               { className: 'dsh-de-gaugesub' },
@@ -1548,8 +1574,8 @@ window.__ModuleLoader__.load({
 .dsh-de-gaugehead{display:flex;align-items:baseline;gap:10px}
 .dsh-de-gaugeval{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
 .dsh-de-gaugeband{font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-de-bar{height:8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin:8px 0 6px}
-.dsh-de-bar span{display:block;height:100%;border-radius:999px;transition:width .4s ease}
+.dsh-de-gaugebar{height:8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin:8px 0 6px}
+.dsh-de-gaugebar span{display:block;height:100%;border-radius:999px;transition:width .4s ease}
 .dsh-de-gaugesub{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .dsh-de-gaugeadvice{font-size:12px;line-height:1.6;margin-top:6px}
 .dsh-de-figs{display:flex;gap:10px;margin-bottom:14px}
@@ -1657,7 +1683,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-de-settings' },
-        h('style', null, SETTINGS_CSS),
+        h('style', null, BASE_CSS + SETTINGS_CSS),
         h(
           'div',
           { className: 'dsh-de-sethead' },
@@ -1689,7 +1715,7 @@ window.__ModuleLoader__.load({
                       h(
                         'select',
                         {
-                          className: 'dsh-de-setselect',
+                          className: 'dsh-de-select',
                           value: view.values[item.key],
                           onChange: (event) => set(item.key, event.target.value),
                         },
@@ -1790,7 +1816,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-de-settings' },
-        h('style', null, SETTINGS_CSS),
+        h('style', null, BASE_CSS + SETTINGS_CSS),
         h('div', { className: 'dsh-de-sethead' }, h('h2', null, view.title)),
         h('div', { className: 'dsh-de-pickq' }, view.intro),
         error ? h('div', { className: 'dsh-de-err' }, error) : null,
@@ -1841,13 +1867,7 @@ window.__ModuleLoader__.load({
 .dsh-de-settings{padding:16px 18px;font-size:13px;color:var(--dsw-alias-label-primary);overflow:auto;height:100%;box-sizing:border-box}
 .dsh-de-sethead{display:flex;align-items:center;gap:8px;margin-bottom:4px}
 .dsh-de-sethead h2{margin:0;font-size:14px;font-weight:600}
-.dsh-de-setgroup{margin-top:16px}
-.dsh-de-setgrouptitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
 .dsh-de-setrow{padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;margin-bottom:6px;background:var(--dsw-alias-bg-layer-1)}
-.dsh-de-setlabel{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
-.dsh-de-setwhy{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin-top:4px}
-.dsh-de-setwarn{font-size:12px;line-height:1.6;color:var(--dsw-alias-warning-primary, #b45309);margin-top:4px}
-.dsh-de-setkey{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.65;margin-top:3px}
 `
 
     // ------------------------------------------------------------ sidebar icon
@@ -2448,7 +2468,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dsh-de-root' },
-        h('style', null, CSS),
+        h('style', null, BASE_CSS + CSS),
         h(
           'div',
           { className: 'dsh-de-head' },
@@ -2762,7 +2782,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'dsh-de-jobhead' },
-                      h('span', { className: `dsh-de-state ${job.status}` }, phaseText(job, currentLang)),
+                      h('span', { className: `dsh-de-jobstate ${job.status}` }, phaseText(job, currentLang)),
                       h('b', null, job.name),
                       h('span', { className: 'dsh-de-where' }, job.label),
                       h('span', { className: 'dsh-de-spacer' }),
@@ -2792,14 +2812,14 @@ window.__ModuleLoader__.load({
                       { className: 'dsh-de-progress' },
                       h(
                         'div',
-                        { className: 'dsh-de-bar', 'data-indeterminate': progress.indeterminate ? '1' : '0' },
+                        { className: 'dsh-de-jbar', 'data-indeterminate': progress.indeterminate ? '1' : '0' },
                         h('div', {
-                          className: 'dsh-de-barfill',
+                          className: 'dsh-de-jbarfill',
                           style: progress.indeterminate ? undefined : { width: `${progress.percent}%` },
                         }),
                         progress.indeterminate
                           ? null
-                          : h('span', { className: 'dsh-de-barlabel' }, `${progress.percent}%`),
+                          : h('span', { className: 'dsh-de-jbarlabel' }, `${progress.percent}%`),
                       ),
                       job.size ? h('span', { className: 'dsh-de-badge' }, job.size) : null,
                       // 速率/ETA/已传字节：只有我们自己下载的任务才有这些字段。
